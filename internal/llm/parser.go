@@ -47,6 +47,21 @@ var (
 	toolCallOpenRe = regexp.MustCompile(`(?s)<tool_calls?\s+name=["']([^"']+)["']\s*>`)
 	toolCallsTagRe = regexp.MustCompile(`(?is)</?tool_calls>`)
 
+	// Some providers intermittently substitute ">" for "=" in the function-open
+	// tag, emitting `<function>NAME>` instead of `<function=NAME>` while the
+	// parameter body stays well-formed. Observed shapes:
+	//     <function>scan_source_sinks>\n<parameter=max_per_class>20</parameter>\n</function>
+	//     <function>check_agent>\n<parameter=agent_id>sub_1_…</parameter>\n</function>
+	// Every other open-tag repair requires an "=", so these fell through to
+	// "no tool call" and were classified malformed_tool_xml, adding a recovery
+	// round-trip per occurrence. Requiring an identifier then ">" then a
+	// "<parameter" or "</function>" makes this a specific, idempotent signal
+	// (ordinary prose never has "<function>word><parameter"); a correct
+	// "<function=name>" has "=" after "<function" and never matches. Only the
+	// function open is repaired — a parameter value legitimately contains ">"
+	// (e.g. a shell redirect), so the same ">"-for-"=" rewrite is unsafe there.
+	funcGtOpenRe = regexp.MustCompile(`(?s)<function>\s*([A-Za-z_][A-Za-z0-9_-]*)\s*>(\s*(?:<parameter|</function>))`)
+
 	// Recover malformed tool-call OPEN tags. Some models intermittently mangle
 	// the opening tag while still emitting a well-formed body and "</function>".
 	// Observed variants (all counted as "no tool call" by the strict fnRegex):
@@ -294,6 +309,9 @@ func normalizeFormat(content string) string {
 	// (which all require "=" and would not fire on these shapes).
 	content = funcNameAttrRe.ReplaceAllString(content, "<function=${1}>")
 	content = toolCallOpenRe.ReplaceAllString(content, "<function=${1}>")
+	// Repair the ">"-for-"=" function-open substitution (<function>NAME> →
+	// <function=NAME>) before the generic repairs, which all require an "=".
+	content = funcGtOpenRe.ReplaceAllString(content, "<function=${1}>${2}")
 	content = strings.ReplaceAll(content, "</tool_call>", "</function>")
 	content = toolCallsTagRe.ReplaceAllString(content, "")
 
