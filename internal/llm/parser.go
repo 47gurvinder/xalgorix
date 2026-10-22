@@ -26,8 +26,16 @@ var (
 	// 3. name= attr: <parameter name="X">value</parameter>
 	paramAttrRegex = regexp.MustCompile(`(?s)<parameter\s+name=["']([^"']+)["']>(.*?)</parameter>`)
 
-	// Alternate top-level format: <invoke name="X">...</invoke>
-	invokeOpen   = regexp.MustCompile(`<invoke\s+name=["']([^"']+)["']>`)
+	// Alternate top-level format: <invoke name="X">...</invoke>, plus the
+	// quote-dropped and half-quoted variants some providers emit while the body
+	// stays well-formed and closes with </function>:
+	//     <invoke name=terminal_execute>      (no quotes)
+	//     <invoke name="claim_next_hypothesis> (opening quote, no closing)
+	// The strict both-quotes form matched none of these, so they parsed as
+	// "no tool call" and drove the malformed-recovery ladder. Optional quotes on
+	// each side, with an identifier-only name, normalize all of them to
+	// <function=X> (and keep ordinary prose from matching).
+	invokeOpen   = regexp.MustCompile(`<invoke\s+name=["']?([A-Za-z_][A-Za-z0-9_-]*)["']?\s*>`)
 	funcCallsTag = regexp.MustCompile(`</?function_calls>`)
 
 	// Space-attribute function form: <function name="X">...</function>. The
