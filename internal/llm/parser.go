@@ -114,6 +114,21 @@ var (
 	malformedNestedParamRe = regexp.MustCompile(`(?s)<parameter<parameter>\s*([A-Za-z_][A-Za-z0-9_-]*)\s*</parameter>`)
 	malformedBareParamRe   = regexp.MustCompile(`(?s)<parameter<([A-Za-z_][A-Za-z0-9_-]*)\s*</parameter>`)
 	malformedBodyParamRe   = regexp.MustCompile(`(?s)(<parameter=[A-Za-z_][A-Za-z0-9_-]*>)\s*<parameter>`)
+	// misTaggedFnOpenRe catches the model writing <parameter=NAME> where
+	// <function=NAME> belongs. some models confuse the two (both use the
+	// <tag=value> syntax), emitting the function OPEN as a parameter tag, e.g.
+	//     <parameter=update_hypothesis>
+	//     <parameter=hypothesis_id>H-97</parameter>
+	//     <parameter=status>rejected</parameter>
+	// The whole call is then unparseable (no <function=…>) and classified
+	// malformed_tool_xml, which discards the turn and re-sends the ENTIRE context
+	// to retry — a dominant source of wasted tokens in production. Signature: a
+	// parameter-open IMMEDIATELY followed by another parameter-open (only
+	// whitespace between), which a legitimate parameter — always carrying a value
+	// and </parameter> — can never produce. Applied (in normalizeFormat) only when
+	// the turn has no well-formed <function=…>…</function> block, so a parameter
+	// value that itself contains markup is never rewritten.
+	misTaggedFnOpenRe = regexp.MustCompile(`<parameter=([A-Za-z_][A-Za-z0-9_-]*)>(\s*<parameter[=\s])`)
 	// Some providers close a parameter with its field name instead of the XML
 	// wrapper name, for example <parameter=title>...</title>. Without repair,
 	// paramEqRegex keeps consuming through the next </parameter>, merging fields
@@ -331,6 +346,15 @@ func normalizeFormat(content string) string {
 	content = malformedNestedParamRe.ReplaceAllString(content, "<parameter=${1}>")
 	content = malformedBareParamRe.ReplaceAllString(content, "<parameter=${1}>")
 	content = malformedBodyParamRe.ReplaceAllString(content, "${1}")
+
+	// Recover a function OPEN mis-tagged as a parameter (<parameter=NAME> for
+	// <function=NAME>). Guarded to turns with no well-formed call so legitimate
+	// parameter values are never rewritten; fixIncomplete then supplies the
+	// missing </function>, and the call parses normally instead of being
+	// discarded + retried with a full context resend.
+	if !fnRegex.MatchString(content) {
+		content = misTaggedFnOpenRe.ReplaceAllString(content, "<function=${1}>${2}")
+	}
 
 	// Normalize quotes/spaces around = signs: <function = "name"> → <function=name>
 	content = stripQuotesRe.ReplaceAllStringFunc(content, func(s string) string {
