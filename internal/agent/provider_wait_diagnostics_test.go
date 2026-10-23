@@ -106,7 +106,10 @@ func TestProviderWaitRecoveryDiagnostic(t *testing.T) {
 	if !strings.Contains(logs.String(), "recovered: wait_attempts=1 cumulative_wait=1ms") {
 		t.Fatal("missing recovery diagnostic")
 	}
-	if a.state.CumulativeRateLimitWait != time.Millisecond || a.state.ConsecutiveRateLimits != 0 {
-		t.Fatalf("recovery changed spent budget or failed to reset attempts: %s / %d", a.state.CumulativeRateLimitWait, a.state.ConsecutiveRateLimits)
+	// A healthy response resets BOTH the attempt counter and the wait budget, so
+	// a later rolling-window stall starts from a full ceiling instead of
+	// inheriting earlier waits and pausing the scan prematurely.
+	if a.state.CumulativeRateLimitWait != 0 || a.state.ConsecutiveRateLimits != 0 {
+		t.Fatalf("recovery did not reset wait budget/attempts: %s / %d", a.state.CumulativeRateLimitWait, a.state.ConsecutiveRateLimits)
 	}
 }
