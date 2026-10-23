@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xalgord/xalgorix/v4/internal/llm"
 	"github.com/xalgord/xalgorix/v4/internal/scanctx"
@@ -2278,5 +2279,28 @@ func TestHookTargetHealthDetectorEdgePagesDoNotClearStreak(t *testing.T) {
 	})
 	if state.ConsecutiveTargetErrors != 2 {
 		t.Fatalf("503 mixed with edge 403/404 must extend the streak, got %d", state.ConsecutiveTargetErrors)
+	}
+}
+
+// A healthy response must clear the cumulative rate-limit wait budget, not just
+// the consecutive-attempt counter. Otherwise a long scan that waits out several
+// rolling provider windows keeps accumulating wait across windows until it
+// crosses the ceiling and pauses — forcing a manual resume even though every
+// window cleared on its own.
+func TestHookResetOnSuccess_ClearsRateLimitWaitBudget(t *testing.T) {
+	state := &ScanState{
+		ConsecutiveErrors:       3,
+		ConsecutiveRateLimits:   7,
+		CumulativeRateLimitWait: 4 * time.Hour,
+	}
+	hookResetOnSuccess(state, nil)
+	if state.CumulativeRateLimitWait != 0 {
+		t.Fatalf("CumulativeRateLimitWait = %s, want 0", state.CumulativeRateLimitWait)
+	}
+	if state.ConsecutiveRateLimits != 0 {
+		t.Fatalf("ConsecutiveRateLimits = %d, want 0", state.ConsecutiveRateLimits)
+	}
+	if state.ConsecutiveErrors != 0 {
+		t.Fatalf("ConsecutiveErrors = %d, want 0", state.ConsecutiveErrors)
 	}
 }

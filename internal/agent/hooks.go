@@ -267,12 +267,15 @@ type ScanState struct {
 	ConsecutiveBlockedCalls int
 	LastBlockedCallHash     string
 
-	// CumulativeRateLimitWait tracks the total time spent parked in the
-	// provider-rate-limit backoff loop across the whole scan. It bounds an
+	// CumulativeRateLimitWait tracks time spent parked in the
+	// provider-rate-limit backoff loop during a CONTINUOUS outage. It bounds an
 	// otherwise-indefinite stall: a persistently 429'd provider would
 	// otherwise keep the scan alive forever (the idle watchdog is kept
-	// alive on purpose during the wait), so we cap the total wait and fail
-	// the scan cleanly once the ceiling is reached.
+	// alive on purpose during the wait), so we cap the wait and pause the
+	// scan cleanly once the ceiling is reached. Reset to 0 by hookResetOnSuccess
+	// on any healthy response, so a scan that waits out a rolling provider
+	// window and then recovers does not accumulate toward the ceiling across
+	// separate windows (which would pause it mid-scan for no real reason).
 	CumulativeRateLimitWait time.Duration
 
 	// ConsecutiveRateLimits tracks how many 429/rate-limit episodes have
@@ -3988,6 +3991,13 @@ func hookExternalReferenceTracker(state *ScanState, args map[string]string) Hook
 func hookResetOnSuccess(state *ScanState, args map[string]string) HookResult {
 	state.ConsecutiveErrors = 0
 	state.ConsecutiveRateLimits = 0
+	// A healthy response means the provider is answering again, so the
+	// rate-limit wait ceiling must measure a CONTINUOUS outage, not the sum of
+	// every wait across a multi-hour scan. Without this reset, a long scan that
+	// repeatedly waits out a rolling provider window (e.g. a 5h quota) keeps
+	// accumulating wait until it crosses the ceiling and pauses — needing a
+	// manual resume — even though every window actually cleared on its own.
+	state.CumulativeRateLimitWait = 0
 	state.EmptyResponseCount = 0
 	state.NoToolCount = 0
 	state.RefusalCount = 0
