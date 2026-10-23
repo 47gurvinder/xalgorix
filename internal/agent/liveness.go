@@ -236,3 +236,84 @@ func (a *Agent) semanticLivenessCheck() HookResult {
 	}
 	return HookResult{}
 }
+
+// defaultPlanCompleteFindingIdle is how many iterations a root scan may run
+// after its plan is fully exhausted without proving any NEW finding before the
+// engine finalizes the assessment. It is generous on purpose: it only bounds
+// the no-new-findings tail AFTER the entire structured methodology is already
+// done, so a still-productive scan (each new finding resets the counter) is
+// never cut, while an exhausted scan that keeps re-testing covered surface for
+// no new evidence can no longer run for many thousands of idle iterations.
+const defaultPlanCompleteFindingIdle = 600
+
+func (a *Agent) planCompleteFindingIdleLimit() int {
+	if a.cfg != nil && a.cfg.PlanCompleteFindingIdle != 0 {
+		return a.cfg.PlanCompleteFindingIdle // negative disables (returned as-is; checked by caller)
+	}
+	return defaultPlanCompleteFindingIdle
+}
+
+// autoFinalizeIfPlanComplete ends a root scan once its structural plan is
+// exhausted (no pending/active tasks) AND no new finding has been validated for
+// planCompleteFindingIdleLimit() iterations. It is the fix for unbounded tails:
+// the semantic liveness clock above is kept alive by any new coverage fact, so
+// a scan that has completed its whole plan but keeps churning already-covered
+// endpoints (phase-21 "novel discovery") never idles out even while proving
+// nothing. This counter, by contrast, only advances once the plan is done and
+// is reset solely by a NEW finding. When it fires the scan is finalized through
+// the same honest terminal assessment as a normal finish, so saved findings and
+// the real completion status are preserved. Returns true when it finalized (the
+// caller must then return from the run loop). Must be called exactly once per
+// iteration — it mutates the idle counter.
+func (a *Agent) autoFinalizeIfPlanComplete() bool {
+	if a.state == nil || a.scanBudget == nil || a.state.DelegatedAgent {
+		return false // root scans only; specialists close their own lane
+	}
+	limit := a.planCompleteFindingIdleLimit()
+	if limit <= 0 {
+		return false // disabled
+	}
+	if a.state.Iteration < a.state.MinIterations {
+		return false
+	}
+	// Plan must exist and be exhausted: no pending/active work remains.
+	if a.state.Plan == nil || len(a.state.Plan.Tasks) == 0 {
+		return false
+	}
+	if _, _, _, unfinished := a.PlanDisposition(); unfinished > 0 {
+		return false
+	}
+	cur := 0
+	if a.scanCtx != nil {
+		cur = len(reporting.GetVulnerabilitiesForContext(a.scanCtx.ID))
+	}
+	if cur > a.state.LastFindingCount {
+		a.state.LastFindingCount = cur
+		a.state.FindingIdleIterations = 0
+		return false
+	}
+	a.state.FindingIdleIterations++
+	if a.state.FindingIdleIterations < limit {
+		return false
+	}
+	a.emitPlanCompleteFinish(cur, limit)
+	return true
+}
+
+// emitPlanCompleteFinish finalizes a plan-complete, finding-idle scan through
+// the same honest terminal path as a model-issued finish (authoritative
+// summary, completion-status assessment, telemetry), so the terminal event is
+// indistinguishable from a normal graceful completion and never loses findings.
+func (a *Agent) emitPlanCompleteFinish(findingCount, limit int) {
+	content := fmt.Sprintf("Assessment finalized: the structural plan is fully exhausted and no new finding was validated in the last %d iterations (diminishing-returns tail). Findings already reported are preserved.", limit)
+	content = authoritativeFinishSummary(content, findingCount)
+	status, reasons := scanCompletionAssessment(a.state)
+	a.state.CompletionStatus = status
+	if status != CompletionStatusCompleted {
+		content += "\n\n" + formatIncompleteSummary(status, reasons)
+	}
+	if summary := scanTelemetrySummary(a.state, status, reasons); summary != "" {
+		a.emit(Event{Type: "message", Content: summary, TotalTokens: a.syncBudgetTokens()})
+	}
+	a.emit(Event{Type: "finished", Content: content, TotalTokens: a.syncBudgetTokens()})
+}
