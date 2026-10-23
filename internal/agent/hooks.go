@@ -254,6 +254,15 @@ type ScanState struct {
 	PlanProgressSeen             map[string]bool
 	ProgressIdleIterations       int
 	LastAssessmentProgress       int
+	// FindingIdleIterations counts iterations since the last NEW validated
+	// finding, but ONLY accrues once the structural plan is exhausted (no
+	// pending/active tasks). It is the signal the plan-complete auto-finalizer
+	// reads: unlike ProgressIdleIterations above, mere coverage/endpoint churn
+	// does not reset it, so a scan that has finished its methodology and stopped
+	// proving anything new cannot keep itself alive indefinitely. Any new finding
+	// resets it to 0.
+	FindingIdleIterations int
+	LastFindingCount      int
 
 	// Blocked-call loop detection. The three block guards (activity policy,
 	// phase restriction, out-of-scope) short-circuit the dispatch BEFORE the

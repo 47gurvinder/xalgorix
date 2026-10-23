@@ -1794,6 +1794,14 @@ func (a *Agent) Run(targets []string, instruction string) {
 		if a.stopForHook(a.semanticLivenessCheck()) {
 			return
 		}
+		// Plan-complete, finding-idle finalizer: end the no-new-findings tail once
+		// the whole structured plan is exhausted (coverage churn alone keeps the
+		// semantic clock above alive, which let scans run many thousands of
+		// iterations past diminishing returns). A still-productive scan is never
+		// cut — any new finding resets the counter.
+		if a.autoFinalizeIfPlanComplete() {
+			return
+		}
 		if guardMsg := a.maybeCompletePassiveReconGuardAtIterationStart(iter); guardMsg != "" {
 			a.msgMu.Lock()
 			a.messages = append(a.messages, llm.Message{Role: "user", Content: guardMsg})

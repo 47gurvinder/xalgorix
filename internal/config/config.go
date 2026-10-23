@@ -230,6 +230,18 @@ type Config struct {
 	// MaxNonProgressSec bounds active time without validated assessment evidence.
 	// XALGORIX_MAX_NON_PROGRESS defaults to one hour; 0 disables this clock.
 	MaxNonProgressSec int
+	// PlanCompleteFindingIdle bounds how many iterations a scan may keep running
+	// AFTER its structural plan is fully exhausted (no pending/active tasks)
+	// without reporting any NEW finding. Once the plan is complete the agent has
+	// executed its whole methodology; continued endpoint/coverage churn (e.g.
+	// re-testing already-covered surface during open-ended discovery) keeps the
+	// semantic liveness clock alive via new coverage facts even though nothing is
+	// being proven, so a scan can run many thousands of iterations past the point
+	// of diminishing returns and dominate token usage. This cap ends the
+	// no-new-findings tail while a still-productive scan (one that keeps landing
+	// findings, which reset the counter) is never cut. XALGORIX_PLAN_COMPLETE_IDLE;
+	// 0 = use the built-in default, a negative value disables the stop.
+	PlanCompleteFindingIdle int
 
 	// ScanRetentionDays controls automatic pruning of old scan output
 	// directories under DataDir. XALGORIX_SCAN_RETENTION_DAYS — when > 0, a
@@ -429,33 +441,34 @@ func load() *Config {
 		GeminiSafetyThreshold: envOr("XALGORIX_GEMINI_SAFETY", "BLOCK_NONE"),
 
 		// Runtime
-		RuntimeBackend:        "native", // Always native in Go version
-		Workspace:             workspace,
-		DataDir:               dataDir,
-		WorkspaceRoot:         dataDir,
-		legacyCWD:             cwd,
-		DisableBrowser:        envOrBool("XALGORIX_DISABLE_BROWSER", false),
-		MaxIterations:         envOrInt("XALGORIX_MAX_ITERATIONS", 0),
-		MinIterations:         envOrInt("XALGORIX_MIN_ITERATIONS", 50),
-		IterationDelaySec:     envOrFloat("XALGORIX_ITERATION_DELAY", 0),
-		MaxWildcardSubdomains: envOrInt("XALGORIX_MAX_WILDCARD_SUBDOMAINS", -1),
-		NoToolAbortAt:         envOrInt("XALGORIX_NO_TOOL_ABORT_AT", 30),
-		MaxFinishRejections:   envOrInt("XALGORIX_MAX_FINISH_REJECTIONS", 15),
-		TargetAuth:            envOr("XALGORIX_TARGET_AUTH", ""),
-		TargetAuthSecondary:   envOr("XALGORIX_TARGET_AUTH_B", ""),
-		OOBPublicURL:          envOr("XALGORIX_OOB_PUBLIC_URL", ""),
-		OOBPort:               envOrInt("XALGORIX_OOB_PORT", 0),
-		InteractshServer:      envOr("XALGORIX_INTERACTSH_SERVER", ""),
-		InteractshToken:       envOr("XALGORIX_INTERACTSH_TOKEN", ""),
-		OOBDisable:            envOrBool("XALGORIX_OOB_DISABLE", false),
-		OOBInteractions:       envOr("XALGORIX_OOB_INTERACTIONS", ""),
-		SourceRepo:            envOr("XALGORIX_SOURCE_REPO", ""),
-		ScanContext:           envOr("XALGORIX_SCAN_CONTEXT", ""),
-		ScanHeaders:           loadScanHeaders(),
-		MaxToolCalls:          envOrInt("XALGORIX_MAX_TOOL_CALLS", 0),
-		MaxDurationSec:        envOrInt("XALGORIX_MAX_DURATION", 0),
-		MaxTokens:             envOrInt("XALGORIX_MAX_TOKENS", 0),
-		MaxNonProgressSec:     envOrInt("XALGORIX_MAX_NON_PROGRESS", 3600),
+		RuntimeBackend:          "native", // Always native in Go version
+		Workspace:               workspace,
+		DataDir:                 dataDir,
+		WorkspaceRoot:           dataDir,
+		legacyCWD:               cwd,
+		DisableBrowser:          envOrBool("XALGORIX_DISABLE_BROWSER", false),
+		MaxIterations:           envOrInt("XALGORIX_MAX_ITERATIONS", 0),
+		MinIterations:           envOrInt("XALGORIX_MIN_ITERATIONS", 50),
+		IterationDelaySec:       envOrFloat("XALGORIX_ITERATION_DELAY", 0),
+		MaxWildcardSubdomains:   envOrInt("XALGORIX_MAX_WILDCARD_SUBDOMAINS", -1),
+		NoToolAbortAt:           envOrInt("XALGORIX_NO_TOOL_ABORT_AT", 30),
+		MaxFinishRejections:     envOrInt("XALGORIX_MAX_FINISH_REJECTIONS", 15),
+		TargetAuth:              envOr("XALGORIX_TARGET_AUTH", ""),
+		TargetAuthSecondary:     envOr("XALGORIX_TARGET_AUTH_B", ""),
+		OOBPublicURL:            envOr("XALGORIX_OOB_PUBLIC_URL", ""),
+		OOBPort:                 envOrInt("XALGORIX_OOB_PORT", 0),
+		InteractshServer:        envOr("XALGORIX_INTERACTSH_SERVER", ""),
+		InteractshToken:         envOr("XALGORIX_INTERACTSH_TOKEN", ""),
+		OOBDisable:              envOrBool("XALGORIX_OOB_DISABLE", false),
+		OOBInteractions:         envOr("XALGORIX_OOB_INTERACTIONS", ""),
+		SourceRepo:              envOr("XALGORIX_SOURCE_REPO", ""),
+		ScanContext:             envOr("XALGORIX_SCAN_CONTEXT", ""),
+		ScanHeaders:             loadScanHeaders(),
+		MaxToolCalls:            envOrInt("XALGORIX_MAX_TOOL_CALLS", 0),
+		MaxDurationSec:          envOrInt("XALGORIX_MAX_DURATION", 0),
+		MaxTokens:               envOrInt("XALGORIX_MAX_TOKENS", 0),
+		MaxNonProgressSec:       envOrInt("XALGORIX_MAX_NON_PROGRESS", 3600),
+		PlanCompleteFindingIdle: envOrInt("XALGORIX_PLAN_COMPLETE_IDLE", 0),
 
 		// Scan retention: 0 disables automatic pruning (keep forever).
 		ScanRetentionDays: envOrInt("XALGORIX_SCAN_RETENTION_DAYS", 0),
