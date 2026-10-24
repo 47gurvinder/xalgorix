@@ -76,6 +76,10 @@ type Config struct {
 	// unchanged, only prompt bytes are saved on every specialist request.
 	// XALGORIX_ROLE_SCOPED_TOOLS, default false (off).
 	RoleScopedTools bool
+	// LeanToolSchema drops example/workflow spans from the tool SchemaXML to
+	// shrink the per-call prompt for ALL agents while preserving every tool,
+	// parameter, and core description. XALGORIX_LEAN_TOOL_SCHEMA, default false.
+	LeanToolSchema bool
 
 	// BoundedContext enables information-complete bounded working context:
 	// the complete raw output of every tool result is archived under
@@ -428,6 +432,7 @@ func load() *Config {
 		MaxOutputTokens:         envOrInt("XALGORIX_MAX_OUTPUT_TOKENS", 8192),
 		ContextCompactTokens:    envOrInt("XALGORIX_CONTEXT_COMPACT_TOKENS", -1),
 		RoleScopedTools:         envOrBool("XALGORIX_ROLE_SCOPED_TOOLS", false),
+		LeanToolSchema:          envOrBool("XALGORIX_LEAN_TOOL_SCHEMA", false),
 		BoundedContext:          envOrBool("XALGORIX_BOUNDED_CONTEXT", false),
 		ToolArchiveMinBytes:     envOrInt("XALGORIX_TOOL_ARCHIVE_MIN_BYTES", 1500),
 		ToolArchiveActiveWindow: envOrInt("XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW", 8),
