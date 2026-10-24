@@ -142,6 +142,14 @@ type Config struct {
 	// tends to discard useful working context and hurt output quality.
 	ContextCompactRatio float64
 
+	// LLMTimeoutSeconds bounds a single outbound LLM request (the HTTP client
+	// timeout). XALGORIX_LLM_TIMEOUT_SECONDS, default 600 (10 minutes). Raise
+	// it for slow backends: a local llama.cpp server on CPU can take well over
+	// 10 minutes to prefill a large prompt, and every request is aborted
+	// mid-generation with "context deadline exceeded" otherwise. Non-positive
+	// values mean "use the built-in default".
+	LLMTimeoutSeconds int
+
 	// Runtime settings
 	RuntimeBackend string // XALGORIX_RUNTIME_BACKEND — always "native"
 	Workspace      string // XALGORIX_WORKSPACE — workspace root dir
@@ -454,6 +462,7 @@ func load() *Config {
 		ToolArchiveActiveWindow: envOrInt("XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW", 8),
 		LLMContextWindow:        envOrInt("XALGORIX_LLM_CONTEXT_WINDOW", 128000),
 		ContextCompactRatio:     envOrFloat("XALGORIX_CONTEXT_COMPACT_RATIO", 0.75),
+		LLMTimeoutSeconds:       envOrInt("XALGORIX_LLM_TIMEOUT_SECONDS", 600),
 		MemCompTimeout:          envOrInt("XALGORIX_MEMORY_COMPRESSOR_TIMEOUT", 30),
 
 		// Gemini content-filter posture (native Gemini API path only). Default
