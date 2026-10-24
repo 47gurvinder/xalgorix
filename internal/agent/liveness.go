@@ -219,22 +219,117 @@ func (a *Agent) semanticLivenessCheck() HookResult {
 		return HookResult{}
 	}
 	if a.semanticIdleRemaining() <= 0 {
+		// Iteration-driven stall where the wall-clock idle budget also happens to
+		// be spent: try to advance past the stuck task before giving up. (The
+		// separate time-watchdog goroutine can still cancel the run context on a
+		// slow-iterating scan; that path is unchanged and simply stops as before.)
+		if a.tryAdvancePastStuck() {
+			return HookResult{}
+		}
 		return HookResult{StopReason: "stuck_loop_limit", EmitMessage: "Scan stopped: active recovery deadline exhausted without new assessment evidence; saved findings are preserved."}
 	}
 	progress := a.AssessmentProgress()
 	if progress > a.state.LastAssessmentProgress {
 		a.state.ProgressIdleIterations = 0
 		a.state.LastAssessmentProgress = progress
+		// Real progress replenishes the advance budget: the recovery bound only
+		// trips on CONSECUTIVE advances that each yield nothing.
+		a.state.StuckAdvancesSinceProgress = 0
 	} else {
 		a.state.ProgressIdleIterations++
 	}
 	if a.state.ProgressIdleIterations >= semanticNonProgressLimit {
+		// Before terminating the whole scan, try to skip the current stalled task
+		// and continue with the rest of the plan (bounded; flag-gated).
+		if a.tryAdvancePastStuck() {
+			return HookResult{}
+		}
 		return HookResult{StopReason: "stuck_loop_limit", EmitMessage: "Scan stopped: bounded recovery produced no new assessment evidence. Assessment remains partial; saved findings are preserved."}
 	}
 	if a.state.ProgressIdleIterations == semanticNonProgressLimit/2 {
 		a.appendUserNudge("No new assessment evidence has been validated for many turns. Read the current plan, complete unfinished work with concrete evidence, or record a justified blocked/not-applicable disposition. Repeating reads or changing task IDs does not advance the assessment.")
 	}
 	return HookResult{}
+}
+
+// tryAdvancePastStuck recovers a stalled scan instead of killing it: when the
+// feature is enabled and the consecutive-advance budget is not spent, it skips
+// the current stuck task and steers the agent to the remaining plan, resets the
+// idle counters, and returns true to CONTINUE the scan. It returns false when
+// advancing is disabled, out of budget (blocked on everything), or impossible
+// (no unfinished work remains), so the caller applies the normal stuck stop.
+func (a *Agent) tryAdvancePastStuck() bool {
+	if a.cfg == nil || !a.cfg.AdvancePastStuckTasks || a.state == nil {
+		return false
+	}
+	limit := a.cfg.MaxStuckAdvances
+	if limit <= 0 {
+		limit = 3
+	}
+	if a.state.StuckAdvancesSinceProgress >= limit {
+		return false // blocked on every remaining task — let the scan stop honestly
+	}
+	if !a.advancePastStuckTask() {
+		return false // nothing left to move on to
+	}
+	a.state.StuckAdvancesSinceProgress++
+	a.state.ProgressIdleIterations = 0
+	a.resetProgressClock()
+	return true
+}
+
+// advancePastStuckTask marks the current stalled task terminal (blocked, NOT
+// completed) and nudges the agent to the remaining unfinished tasks, so a scan
+// fixated on one un-completable task recovers coverage of the rest of its plan.
+// Returns false when no unfinished work remains to advance to (the normal
+// finish/finalize path should run instead).
+func (a *Agent) advancePastStuckTask() bool {
+	if a.state == nil || a.state.Plan == nil {
+		return false
+	}
+	var active *Task
+	remaining := 0
+	for _, t := range a.state.Plan.Tasks {
+		switch t.Status {
+		case TaskActive:
+			if active == nil {
+				active = t
+				continue
+			}
+			remaining++
+		case TaskPending:
+			remaining++
+		}
+	}
+	if remaining == 0 {
+		return false // only the stalled task (if any) is left; nothing to move on to
+	}
+	skipped := "the stalled task"
+	if active != nil {
+		active.Status = TaskSkipped
+		active.Disposition = DispositionBlockedNoProgress
+		note := fmt.Sprintf("auto-advanced: no new assessment evidence for %d iterations; skipped to preserve coverage of %d remaining task(s)", semanticNonProgressLimit, remaining)
+		if active.Notes != "" {
+			active.Notes += " | " + note
+		} else {
+			active.Notes = note
+		}
+		skipped = fmt.Sprintf("task %q (phase %d)", active.ID, active.Phase)
+	}
+	a.appendUserNudge(fmt.Sprintf("STUCK-TASK RECOVERY: %s produced no new assessment evidence for many turns and is now marked blocked_no_progress — do NOT keep retrying it. Read the current plan and move to a DIFFERENT unfinished task (%d remain), testing it with concrete requests and recording real evidence. If a task is genuinely inapplicable or blocked, record its typed not_applicable/blocked_* disposition with a concrete surface fact.", skipped, remaining))
+	return true
+}
+
+// resetProgressClock moves only the wall-clock idle deadline forward WITHOUT
+// recording a (non-existent) progress fact, so the time watchdog does not kill
+// the scan immediately after advance-past-stuck skips a stalled task.
+func (a *Agent) resetProgressClock() {
+	if a.scanBudget == nil {
+		return
+	}
+	a.scanBudget.persistMu.Lock()
+	a.scanBudget.progressAt = time.Now()
+	a.scanBudget.persistMu.Unlock()
 }
 
 // defaultPlanCompleteFindingIdle is how many iterations a root scan may run
