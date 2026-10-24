@@ -12,8 +12,41 @@ import (
 	"github.com/xalgord/xalgorix/v4/internal/tools/codesearch"
 )
 
+// nativeToolPromptRewrite swaps the two blocks of the system prompt that teach
+// the XML dialect for their native-channel equivalents. Only those blocks are
+// touched: the rest of the prompt (methodology, rate policy, tool reference) is
+// channel-agnostic and stays byte-identical.
+func nativeToolPromptRewrite(prompt string) string {
+	prompt = strings.Replace(prompt, xmlCallRule, nativeCallRule, 1)
+	prompt = strings.Replace(prompt, xmlFormatBlock, nativeFormatBlock, 1)
+	return prompt
+}
+
+const (
+	xmlCallRule = `1. You MUST call tools using the XML format below. NEVER describe what you would do without calling a tool — DO IT IMMEDIATELY IN THE SAME RESPONSE.
+2. Every response MUST contain at least one valid XML tool call tag (e.g. <function=terminal_execute>...). Text-only responses talking about using a tool without including the XML call tag are REJECTED BY THE RUNTIME ENGINE.`
+
+	nativeCallRule = `1. Call tools through the native tool interface. NEVER describe what you would do without calling a tool — DO IT IMMEDIATELY IN THE SAME RESPONSE.
+2. Every response MUST contain at least one tool call. Text-only responses talking about using a tool are REJECTED BY THE RUNTIME ENGINE. Do NOT emit XML tags: they are not parsed on this channel.`
+
+	xmlFormatBlock = `## Tool Call Format
+<function=tool_name>
+<parameter=param_name>value</parameter>
+</function>`
+
+	nativeFormatBlock = `## Tool Call Format
+Use the native tool interface. Arguments are passed as a JSON object, not as XML tags.
+The XML examples elsewhere in this document are legacy documentation — never reproduce them.`
+)
+
 func (a *Agent) buildSystemPrompt(targets []string, instruction string, ratePolicy scanctx.RequestRatePolicy) string {
 	toolSchema := a.registry.SchemaXML()
+	if a.nativeToolCalling {
+		// Tool definitions travel in the `tools` array on this channel. Repeating
+		// them here would only inflate the prompt — and prefill is the dominant
+		// cost on CPU-only inference.
+		toolSchema = "<tools>Tool definitions are supplied through the native API channel. Call them directly.</tools>"
+	}
 	if !ratePolicy.Enabled() {
 		ratePolicy = EffectiveRequestRatePolicy(a.cfg, instruction)
 	}
@@ -414,7 +447,14 @@ You have access to **expert-level vulnerability skills** via the read_skill and 
 		rateInt, rateDelay,
 		toolSchema, strings.Join(targets, "\n"), checklist, a.buildClosingInstruction(instruction))
 
-	prompt = prompt + "\n\n## CANONICAL TOOL REFERENCE — FOLLOW EXACTLY\n" + embeddedToolReference
+	if a.nativeToolCalling {
+		// The embedded reference is 122 lines of XML examples; appending it on
+		// the native channel would contradict the instructions above and cost
+		// prefill time for nothing.
+		prompt = nativeToolPromptRewrite(prompt)
+	} else {
+		prompt = prompt + "\n\n## CANONICAL TOOL REFERENCE — FOLLOW EXACTLY\n" + embeddedToolReference
+	}
 
 	// Localize human-readable output when the operator selected a non-English
 	// language. The directive is prepended so it carries maximum weight, and
