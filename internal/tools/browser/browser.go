@@ -238,7 +238,7 @@ ACTIONS:
   verify_xss   — CONFIRM an XSS payload actually executes in the browser (proof of execution, not reflection). Point it at a payload that emits a unique nonce and pass nonce=<that value>; confirmed only if the nonce is observed executing. Three oracles are accepted: a JS dialog (alert/confirm/prompt('XV-8f3a')), a console call (console.log('XV-8f3a')) — useful when a filter strips alert — or a DOM marker (document.title='XV-8f3a' or window.name='XV-8f3a') for DOM-only sinks. GET (default): pass url=<URL carrying the payload>. POST-reflected XSS: pass url=<form action> plus data=<urlencoded body, e.g. search=<payload>> (method defaults to POST when data is set) — this performs a real form POST and confirms in ONE call, so do NOT hand-build form submissions with browser_action. Use before reporting XSS.
   verify_path_template_xss — On a DISCOVERED dynamic route that appears to render AngularJS-style {{...}} expressions in URL path segments, pass url=<candidate route prefix ending in />. The browser adds a fresh, harmless numeric marker to one path segment and confirms only if JavaScript executes. Launch the browser first. No product-specific routes are guessed.
 
-SIGNUP/LOGIN WORKFLOW:
+⟦ex⟧SIGNUP/LOGIN WORKFLOW:
   1. launch url=https://target.com/signup
   2. snapshot → identify form fields
   3. type selector=@e3 text=testuser123
@@ -248,7 +248,7 @@ SIGNUP/LOGIN WORKFLOW:
   7. wait selector=".success" OR wait type=navigation
   8. Use agentmail wait_for_email to get verification link
   9. goto url=VERIFICATION_LINK
-  10. get_cookies → save session tokens for authenticated testing`,
+  10. get_cookies → save session tokens for authenticated testing⟦/ex⟧`,
 		Parameters: []tools.Parameter{
 			{Name: "command", Description: "Browser action (see list above). Always provide it; only unambiguous omitted actions can be recovered.", Required: false},
 			{Name: "url", Description: "URL to navigate to (launch/goto/verify_xss), or the discovered route prefix for verify_path_template_xss", Required: false},

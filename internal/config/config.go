@@ -76,6 +76,10 @@ type Config struct {
 	// unchanged, only prompt bytes are saved on every specialist request.
 	// XALGORIX_ROLE_SCOPED_TOOLS, default false (off).
 	RoleScopedTools bool
+	// LeanToolSchema drops example/workflow spans from the tool SchemaXML to
+	// shrink the per-call prompt for ALL agents while preserving every tool,
+	// parameter, and core description. XALGORIX_LEAN_TOOL_SCHEMA, default false.
+	LeanToolSchema bool
 
 	// AdvancePastStuckTasks changes the stall response: when a scan makes no new
 	// assessment evidence within the idle limit, instead of terminating the
@@ -442,6 +446,7 @@ func load() *Config {
 		MaxOutputTokens:         envOrInt("XALGORIX_MAX_OUTPUT_TOKENS", 8192),
 		ContextCompactTokens:    envOrInt("XALGORIX_CONTEXT_COMPACT_TOKENS", -1),
 		RoleScopedTools:         envOrBool("XALGORIX_ROLE_SCOPED_TOOLS", false),
+		LeanToolSchema:          envOrBool("XALGORIX_LEAN_TOOL_SCHEMA", false),
 		AdvancePastStuckTasks:   envOrBool("XALGORIX_ADVANCE_PAST_STUCK", false),
 		MaxStuckAdvances:        envOrInt("XALGORIX_MAX_STUCK_ADVANCES", 3),
 		BoundedContext:          envOrBool("XALGORIX_BOUNDED_CONTEXT", false),

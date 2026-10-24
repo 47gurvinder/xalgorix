@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -120,6 +121,10 @@ type Registry struct {
 	// schemaHidden withholds tool DOCUMENTATION from SchemaXML for role
 	// scoping. Hidden tools stay registered and executable.
 	schemaHidden map[string]bool
+	// leanSchema, when set, drops ⟦ex⟧…⟦/ex⟧ example/workflow spans from
+	// tool/parameter descriptions in SchemaXML to shrink the per-call prompt.
+	// Every tool, parameter, and core (non-example) description is preserved.
+	leanSchema bool
 }
 
 // NewRegistry creates a new tool registry.
@@ -391,7 +396,7 @@ func (r *Registry) SchemaXML() string {
 			continue
 		}
 		out += fmt.Sprintf("  <tool name=\"%s\">\n", attrEscape(t.Name))
-		out += fmt.Sprintf("    <description>%s</description>\n", textEscape(t.Description))
+		out += fmt.Sprintf("    <description>%s</description>\n", textEscape(r.renderDescription(t.Description)))
 		if len(t.Parameters) > 0 {
 			out += "    <parameters>\n"
 			for _, p := range t.Parameters {
@@ -400,7 +405,7 @@ func (r *Registry) SchemaXML() string {
 					req = " required=\"true\""
 				}
 				out += fmt.Sprintf("      <parameter name=\"%s\"%s>%s</parameter>\n",
-					attrEscape(p.Name), req, textEscape(p.Description))
+					attrEscape(p.Name), req, textEscape(r.renderDescription(p.Description)))
 			}
 			out += "    </parameters>\n"
 		}
@@ -416,6 +421,39 @@ func (r *Registry) SchemaXML() string {
 	}
 	out += "</tools>\n"
 	return out
+}
+
+// leanOmitRe matches a sentinel-wrapped example/workflow span (⟦ex⟧…⟦/ex⟧),
+// including leading horizontal whitespace, for lean-schema stripping.
+var leanOmitRe = regexp.MustCompile(`(?s)[ \t]*⟦ex⟧.*?⟦/ex⟧\n?`)
+
+// leanMarkerRe matches just the ⟦ex⟧/⟦/ex⟧ markers (full-schema path keeps the
+// example text and drops only the markers).
+var leanMarkerRe = regexp.MustCompile(`⟦/?ex⟧`)
+
+// renderDescription applies the lean-schema transform to a tool/parameter
+// description: in lean mode it removes ⟦ex⟧…⟦/ex⟧ example/workflow spans
+// entirely; in full mode it strips only the markers, leaving the example text
+// intact. Core description text, every tool, and every parameter are preserved
+// in both modes, so the documented, reachable tool set is unchanged — lean mode
+// only drops illustrative examples. Called under the SchemaXML read lock.
+func (r *Registry) renderDescription(s string) string {
+	if !strings.Contains(s, "⟦") {
+		return s
+	}
+	if r.leanSchema {
+		return strings.TrimRight(leanOmitRe.ReplaceAllString(s, ""), " \t\n")
+	}
+	return leanMarkerRe.ReplaceAllString(s, "")
+}
+
+// SetLeanSchema toggles lean tool-schema rendering (drop example/workflow spans
+// to shrink the per-call prompt). Preserves every tool, parameter, and core
+// description. Driven by XALGORIX_LEAN_TOOL_SCHEMA.
+func (r *Registry) SetLeanSchema(on bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.leanSchema = on
 }
 
 // RecoveryToolIndex is a compact reminder of documented tool names and their

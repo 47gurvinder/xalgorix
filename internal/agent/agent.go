@@ -459,6 +459,7 @@ func NewAgent(cfg *config.Config, name string, events chan Event, localGuard sco
 	skillstool.Register(reg, cfg.SkillsDir)
 	oobtool.Register(reg)
 	codesearch.Register(reg)
+	reg.SetLeanSchema(cfg.LeanToolSchema)
 
 	hookReg := NewHookRegistry()
 	RegisterDefaultHooks(hookReg)
