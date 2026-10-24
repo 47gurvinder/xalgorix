@@ -81,6 +81,20 @@ type Config struct {
 	// parameter, and core description. XALGORIX_LEAN_TOOL_SCHEMA, default false.
 	LeanToolSchema bool
 
+	// AdvancePastStuckTasks changes the stall response: when a scan makes no new
+	// assessment evidence within the idle limit, instead of terminating the
+	// WHOLE scan, the engine marks the current stalled task blocked and steers
+	// the agent to the rest of its plan, so a scan fixated on one un-completable
+	// task still covers its remaining tasks. Bounded by MaxStuckAdvances
+	// consecutive no-progress advances so a scan blocked on everything still
+	// stops. Default off — behavior-changing, A/B before enabling.
+	// XALGORIX_ADVANCE_PAST_STUCK.
+	AdvancePastStuckTasks bool
+	// MaxStuckAdvances bounds consecutive auto-advances without any new progress
+	// in between before the scan stops anyway (the blocked-on-everything
+	// backstop). XALGORIX_MAX_STUCK_ADVANCES, default 3; <=0 uses the default.
+	MaxStuckAdvances int
+
 	// BoundedContext enables information-complete bounded working context:
 	// the complete raw output of every tool result is archived under
 	// <ScanDir>/tool-outputs, and tool-result messages older than the active
@@ -433,6 +447,8 @@ func load() *Config {
 		ContextCompactTokens:    envOrInt("XALGORIX_CONTEXT_COMPACT_TOKENS", -1),
 		RoleScopedTools:         envOrBool("XALGORIX_ROLE_SCOPED_TOOLS", false),
 		LeanToolSchema:          envOrBool("XALGORIX_LEAN_TOOL_SCHEMA", false),
+		AdvancePastStuckTasks:   envOrBool("XALGORIX_ADVANCE_PAST_STUCK", false),
+		MaxStuckAdvances:        envOrInt("XALGORIX_MAX_STUCK_ADVANCES", 3),
 		BoundedContext:          envOrBool("XALGORIX_BOUNDED_CONTEXT", false),
 		ToolArchiveMinBytes:     envOrInt("XALGORIX_TOOL_ARCHIVE_MIN_BYTES", 1500),
 		ToolArchiveActiveWindow: envOrInt("XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW", 8),

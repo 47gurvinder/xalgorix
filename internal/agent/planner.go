@@ -102,6 +102,12 @@ const (
 	DispositionBlockedPolicy          = "blocked_policy"
 	DispositionExhausted              = "exhausted"
 	DispositionSuperseded             = "superseded"
+	// DispositionBlockedNoProgress is ENGINE-SET only (not model-submittable via
+	// update_plan): the advance-past-stuck recovery assigns it to a task it
+	// abandons after the no-progress idle limit, so the task reads as blocked
+	// work (blocked_ prefix) rather than completed coverage, keeping the scan's
+	// completion status honest.
+	DispositionBlockedNoProgress = "blocked_no_progress"
 )
 
 // vagueDispositionReasons are the shortcut rationalizations that cannot clear

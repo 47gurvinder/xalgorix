@@ -254,6 +254,13 @@ type ScanState struct {
 	PlanProgressSeen             map[string]bool
 	ProgressIdleIterations       int
 	LastAssessmentProgress       int
+	// StuckAdvancesSinceProgress counts how many times the engine has
+	// auto-advanced past a stuck task (skipped it and continued) WITHOUT any
+	// new assessment progress in between. Real progress resets it. It bounds the
+	// advance-past-stuck recovery so a scan blocked on every remaining task
+	// still terminates instead of skipping its whole plan. Only used when
+	// cfg.AdvancePastStuckTasks is set.
+	StuckAdvancesSinceProgress int
 	// FindingIdleIterations counts iterations since the last NEW validated
 	// finding, but ONLY accrues once the structural plan is exhausted (no
 	// pending/active tasks). It is the signal the plan-complete auto-finalizer
