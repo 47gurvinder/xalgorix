@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/xalgord/xalgorix/v4/internal/config"
 )
@@ -90,6 +91,31 @@ func TestSemanticLivenessAdvancesThenStopsWhenBlockedEverywhere(t *testing.T) {
 	}
 	if advances != maxAdv || stops != 1 {
 		t.Fatalf("expected %d advances then a stop (blocked everywhere), got advances=%d stops=%d", maxAdv, advances, stops)
+	}
+}
+
+func TestSemanticLivenessTimeBasedAdvanceOnSlowScan(t *testing.T) {
+	// A SLOW scan: the 160-iteration counter is nowhere near its limit, but most
+	// of the wall-clock idle budget is spent. Only the time-based trigger can
+	// rescue it before the idle watchdog would kill it.
+	a, _ := stuckAgent(t, true, 3, 5)
+	a.cfg.MaxNonProgressSec = 3600
+	a.state.ProgressIdleIterations = 10                         // far below semanticNonProgressLimit (160)
+	a.scanBudget.progressAt = time.Now().Add(-59 * time.Minute) // ~1 min left of a 60-min budget
+	res := a.semanticLivenessCheck()
+	if res.StopReason != "" {
+		t.Fatalf("slow stuck scan must advance via the time-based trigger, not stop: %+v", res)
+	}
+	if a.state.StuckAdvancesSinceProgress != 1 {
+		t.Fatalf("expected one time-based advance recorded, got %d", a.state.StuckAdvancesSinceProgress)
+	}
+	// Flag OFF: the same slow stall must fall through (no advance; watchdog governs).
+	b, _ := stuckAgent(t, false, 3, 5)
+	b.cfg.MaxNonProgressSec = 3600
+	b.state.ProgressIdleIterations = 10
+	b.scanBudget.progressAt = time.Now().Add(-59 * time.Minute)
+	if res := b.semanticLivenessCheck(); res.StopReason != "" || b.state.StuckAdvancesSinceProgress != 0 {
+		t.Fatalf("flag off must not advance: stop=%q advances=%d", res.StopReason, b.state.StuckAdvancesSinceProgress)
 	}
 }
 
