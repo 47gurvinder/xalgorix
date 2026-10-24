@@ -35,8 +35,20 @@ var (
 	// "no tool call" and drove the malformed-recovery ladder. Optional quotes on
 	// each side, with an identifier-only name, normalize all of them to
 	// <function=X> (and keep ordinary prose from matching).
-	invokeOpen   = regexp.MustCompile(`<invoke\s+name=["']?([A-Za-z_][A-Za-z0-9_-]*)["']?\s*>`)
-	funcCallsTag = regexp.MustCompile(`</?function_calls>`)
+	invokeOpen = regexp.MustCompile(`<invoke\s+name=["']?([A-Za-z_][A-Za-z0-9_-]*)["']?\s*>`)
+	// invokeEqOpenRe recovers the equals-style invoke open tag "<invoke=NAME>"
+	// (some models emit the Claude <invoke …> vocabulary but with "=" instead of
+	// name="…"), e.g. <invoke=read_ledger>. invokeOpen above only handles the
+	// name="…" form, so the "=" form was left unparseable and the whole call —
+	// a real probe or ledger op — was discarded as malformed_tool_xml.
+	invokeEqOpenRe = regexp.MustCompile(`<invoke\s*=\s*["']?([A-Za-z_][A-Za-z0-9_-]*)["']?\s*>`)
+	// slashFnOpenRe recovers a function OPEN tag mangled with a LEADING SLASH,
+	// e.g. </function=terminal_execute> where <function=terminal_execute> belongs
+	// (observed: a real command probe discarded this way). The "=NAME" after
+	// "</function" is what distinguishes it from the legitimate close tag
+	// "</function>" (which has no "="), so this never rewrites a real close.
+	slashFnOpenRe = regexp.MustCompile(`</function\s*=\s*["']?([A-Za-z_][A-Za-z0-9_-]*)["']?\s*>`)
+	funcCallsTag  = regexp.MustCompile(`</?function_calls>`)
 
 	// Space-attribute function form: <function name="X">...</function>. The
 	// body is well-formed but fnRegex requires "<function=", so these turns
@@ -325,6 +337,7 @@ func normalizeFormat(content string) string {
 	if strings.Contains(content, "<invoke") || strings.Contains(content, "<function_calls") {
 		content = funcCallsTag.ReplaceAllString(content, "")
 		content = invokeOpen.ReplaceAllString(content, "<function=$1>")
+		content = invokeEqOpenRe.ReplaceAllString(content, "<function=$1>")
 		content = strings.ReplaceAll(content, "</invoke>", "</function>")
 	}
 
@@ -335,6 +348,10 @@ func normalizeFormat(content string) string {
 	// Repair the ">"-for-"=" function-open substitution (<function>NAME> →
 	// <function=NAME>) before the generic repairs, which all require an "=".
 	content = funcGtOpenRe.ReplaceAllString(content, "<function=${1}>${2}")
+	// Recover a function OPEN mangled with a leading slash: </function=NAME> →
+	// <function=NAME>. Safe because the legitimate close "</function>" carries no
+	// "=NAME", so only the mis-tagged open is rewritten.
+	content = slashFnOpenRe.ReplaceAllString(content, "<function=${1}>")
 	content = strings.ReplaceAll(content, "</tool_call>", "</function>")
 	content = toolCallsTagRe.ReplaceAllString(content, "")
 
