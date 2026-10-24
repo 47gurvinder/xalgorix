@@ -239,9 +239,17 @@ func NewClient(cfg *config.Config, opts ...Option) *Client {
 	if provider == "" && cfg != nil && strings.TrimSpace(cfg.LLMProvider) != "" {
 		provider = strings.ToLower(strings.TrimSpace(cfg.LLMProvider))
 	}
+	// Bound each outbound request. The 10-minute default suits hosted API
+	// backends; a local runtime (llama.cpp on CPU) can legitimately need far
+	// longer to prefill a large prompt, so allow overriding it via
+	// XALGORIX_LLM_TIMEOUT_SECONDS. Non-positive values keep the default.
+	timeout := 10 * time.Minute
+	if cfg != nil && cfg.LLMTimeoutSeconds > 0 {
+		timeout = time.Duration(cfg.LLMTimeoutSeconds) * time.Second
+	}
 	c := &Client{
 		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 10 * time.Minute},
+		httpClient: &http.Client{Timeout: timeout},
 		apiModel:   apiModel,
 		provider:   provider,
 	}
