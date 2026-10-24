@@ -246,6 +246,20 @@ func (a *Agent) semanticLivenessCheck() HookResult {
 		}
 		return HookResult{StopReason: "stuck_loop_limit", EmitMessage: "Scan stopped: bounded recovery produced no new assessment evidence. Assessment remains partial; saved findings are preserved."}
 	}
+	// Slow-scan safeguard: on a scan whose iterations are slow (seconds each), the
+	// 160-iteration counter above may not reach its limit before the wall-clock
+	// idle watchdog cancels the run — so a stalled SLOW scan would be KILLED
+	// instead of advanced, and never reach its untested tasks. Once most of the
+	// wall-clock idle budget is spent with no new progress, fire the advance
+	// proactively (while the run context is still alive), so slow stuck scans also
+	// skip the stuck task and keep covering the plan. tryAdvancePastStuck is
+	// flag-gated and bounded, and resets both idle clocks on success.
+	if a.cfg != nil && a.cfg.MaxNonProgressSec > 0 {
+		budget := time.Duration(a.cfg.MaxNonProgressSec) * time.Second
+		if a.semanticIdleRemaining() <= budget/3 && a.tryAdvancePastStuck() {
+			return HookResult{}
+		}
+	}
 	if a.state.ProgressIdleIterations == semanticNonProgressLimit/2 {
 		a.appendUserNudge("No new assessment evidence has been validated for many turns. Read the current plan, complete unfinished work with concrete evidence, or record a justified blocked/not-applicable disposition. Repeating reads or changing task IDs does not advance the assessment.")
 	}
