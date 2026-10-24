@@ -140,6 +140,7 @@ func allEnvSettingDefinitions() []envSettingDefinition {
 		{Key: "XALGORIX_MAX_OUTPUT_TOKENS", Label: "Max output tokens", Category: "LLM", Description: "Per-call completion cap (max_tokens). Reasoning models spend part of this on hidden thinking before a tool call, so a small provider default can truncate large calls. Clamped to a 1024 floor.", DefaultValue: "8192", InputType: "number"},
 		{Key: "XALGORIX_LLM_CONTEXT_WINDOW", Label: "LLM context window (tokens)", Category: "LLM", Description: "Total context window of your model, in tokens. Auto-compaction fires at a fraction of this (see compaction ratio) so the running context is only compacted when the window is genuinely filling up. Set to your model's real window (e.g. 1000000 for a 1M-token model). Default 128000.", DefaultValue: "128000", InputType: "number"},
 		{Key: "XALGORIX_LLM_TIMEOUT_SECONDS", Label: "LLM request timeout (seconds)", Category: "LLM", Description: "Hard limit for a single LLM request, in seconds. Default 600 (10 minutes), which suits hosted APIs. Raise it for slow local backends: a llama.cpp server on CPU can need 20+ minutes just to prefill a large prompt, and every request dies with a timeout before it can answer. Applies to LLM clients created after the change — restart to be sure.", DefaultValue: "600", InputType: "number"},
+		{Key: "XALGORIX_NATIVE_TOOL_CALLS", Label: "Native tool calling (OpenAI-compatible backends)", Category: "LLM", Description: "Send tool definitions as an OpenAI-style `tools` array and read calls from `tool_calls`, instead of requiring the model to emit XML tags inside its text. llama-server derives a grammar from the schema, so a malformed call becomes impossible, and models that were never trained on the XML dialect can still drive tools. Only affects OpenAI-compatible endpoints (llama.cpp, Ollama, vLLM, OpenAI); Anthropic, Gemini and the Responses API keep using XML. Default false.", DefaultValue: "false", InputType: "boolean"},
 		{Key: "XALGORIX_CONTEXT_COMPACT_RATIO", Label: "Context compaction ratio", Category: "LLM", Description: "Fraction of the context window at which to auto-compact (0.5–0.9). Default 0.75 = compact at ~75% full. Compacting earlier discards useful working context and hurts output quality; going higher risks hitting the provider's hard limit first.", DefaultValue: "0.75", InputType: "number"},
 		{Key: "XALGORIX_CONTEXT_COMPACT_TOKENS", Label: "Context compaction budget (tokens, override)", Category: "LLM", Description: "Optional ABSOLUTE override for the compaction trigger. Leave at -1 (auto) to derive the trigger from the context window × ratio above. Set a positive token count to force a fixed budget instead. 0 disables auto-compaction. Default -1 (auto).", DefaultValue: "-1", InputType: "number"},
 		{Key: "XALGORIX_MEMORY_COMPRESSOR_TIMEOUT", Label: "Memory compressor timeout", Category: "LLM", Description: "Timeout in seconds for context compression.", DefaultValue: "30", InputType: "number"},
@@ -802,6 +803,8 @@ func (s *Server) applyEnvironmentToRuntimeConfig(values map[string]string) {
 			s.cfg.LLMContextWindow = parseIntSetting(value, 128000)
 		case "XALGORIX_LLM_TIMEOUT_SECONDS":
 			s.cfg.LLMTimeoutSeconds = parseIntSetting(value, 600)
+		case "XALGORIX_NATIVE_TOOL_CALLS":
+			s.cfg.NativeToolCalls = parseBoolSetting(value, false)
 		case "XALGORIX_CONTEXT_COMPACT_RATIO":
 			s.cfg.ContextCompactRatio = parseFloatSetting(value, 0.75)
 		case "XALGORIX_BOUNDED_CONTEXT":
@@ -958,6 +961,8 @@ func (s *Server) envSettingValue(key string) string {
 		return strconv.FormatFloat(s.cfg.ContextCompactRatio, 'g', -1, 64)
 	case "XALGORIX_BOUNDED_CONTEXT":
 		return strconv.FormatBool(s.cfg.BoundedContext)
+	case "XALGORIX_NATIVE_TOOL_CALLS":
+		return strconv.FormatBool(s.cfg.NativeToolCalls)
 	case "XALGORIX_TOOL_ARCHIVE_MIN_BYTES":
 		return strconv.Itoa(s.cfg.ToolArchiveMinBytes)
 	case "XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW":

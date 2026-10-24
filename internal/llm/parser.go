@@ -12,6 +12,20 @@ import (
 type ToolCall struct {
 	Name string            `json:"name"`
 	Args map[string]string `json:"args"`
+
+	// ID identifies the call when it arrived through the native (OpenAI-style)
+	// channel: the role:"tool" result that follows must reference it. Empty for
+	// calls parsed out of the XML dialect.
+	ID string `json:"id,omitempty"`
+
+	// RawArguments preserves the exact `arguments` JSON the server returned, so
+	// the assistant turn can be replayed byte-for-byte in the history.
+	RawArguments string `json:"-"`
+
+	// ArgumentError records a malformed `arguments` payload. The call is kept
+	// rather than dropped, so the agent can return a corrective tool result
+	// instead of losing the turn.
+	ArgumentError string `json:"-"`
 }
 
 var (
