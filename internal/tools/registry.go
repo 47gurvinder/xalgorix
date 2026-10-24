@@ -423,6 +423,46 @@ func (r *Registry) SchemaXML() string {
 	return out
 }
 
+// ToolSnapshot is a read-only copy of a visible tool's schema, used to build
+// the OpenAI-style `tools` array for native tool calling. It is decoupled from
+// *Tool on purpose: callers cannot reach the Execute func or mutate registry
+// state through it.
+type ToolSnapshot struct {
+	Name        string
+	Description string
+	Parameters  []Parameter
+}
+
+// VisibleToolSnapshots returns a snapshot of every tool currently visible to
+// the model. schemaHidden tools are excluded, exactly as SchemaXML does, so the
+// native `tools` array and the XML schema always describe the same reachable
+// set. Order is alphabetical for the same reason SchemaXML sorts: a randomized
+// order would produce a different request body on every call and defeat
+// provider prefix caching.
+func (r *Registry) VisibleToolSnapshots() []ToolSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]ToolSnapshot, 0, len(r.tools))
+	for _, t := range r.tools {
+		if r.schemaHidden[t.Name] {
+			continue
+		}
+		params := make([]Parameter, len(t.Parameters))
+		copy(params, t.Parameters)
+		for i := range params {
+			params[i].Description = r.renderDescription(params[i].Description)
+		}
+		out = append(out, ToolSnapshot{
+			Name:        t.Name,
+			Description: r.renderDescription(t.Description),
+			Parameters:  params,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // leanOmitRe matches a sentinel-wrapped example/workflow span (⟦ex⟧…⟦/ex⟧),
 // including leading horizontal whitespace, for lean-schema stripping.
 var leanOmitRe = regexp.MustCompile(`(?s)[ \t]*⟦ex⟧.*?⟦/ex⟧\n?`)

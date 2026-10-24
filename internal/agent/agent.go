@@ -197,10 +197,15 @@ func (a *Agent) unknownToolRecoveryError(toolError string) string {
 
 // Agent runs the LLM agent loop.
 type Agent struct {
-	ID                         string
-	Name                       string
-	cfg                        *config.Config
-	client                     *llm.Client
+	ID     string
+	Name   string
+	cfg    *config.Config
+	client *llm.Client
+	// nativeToolCalling selects the OpenAI-style tool channel instead of the
+	// XML-in-text dialect. Resolved once at the start of Run from the operator
+	// flag plus the resolved endpoint, so it is stable for the whole scan.
+	nativeToolCalling          bool
+	nativeToolDefs             []llm.ToolDefinition
 	registry                   *tools.Registry
 	scanCtx                    *scanctx.ScanContext // per-session state (vulns, notes, terminal, browser)
 	messages                   []llm.Message
@@ -1298,6 +1303,21 @@ func (a *Agent) SetActivityPolicy(reconMode, scanIntensity string, targets []str
 	a.refreshPassiveReconGuard()
 }
 
+// appendToolOutcome records a tool result in the conversation.
+//
+// On the native channel the provider requires each result to reference the call
+// it answers, so it becomes a role:"tool" message carrying tool_call_id. The
+// XML path keeps the legacy user message, unchanged.
+func (a *Agent) appendToolOutcome(tc llm.ToolCall, text string) {
+	a.msgMu.Lock()
+	defer a.msgMu.Unlock()
+	if a.nativeToolCalling && tc.ID != "" {
+		a.messages = append(a.messages, llm.Message{Role: "tool", ToolCallID: tc.ID, Content: text})
+		return
+	}
+	a.messages = append(a.messages, llm.Message{Role: "user", Content: text})
+}
+
 // canonicalizeAssistantTurn renders an assistant turn in the canonical tool-
 // call format: the model's clean prose (tool XML already stripped) followed by
 // one well-formed <function=NAME>…</function> block per parsed/recovered call.
@@ -1619,6 +1639,34 @@ func (a *Agent) executeToolAsync(toolName string, toolArgs map[string]string) (r
 }
 
 // Run starts the agent loop with the given targets and instructions.
+// buildNativeToolDefinitions converts the registry's visible tools into the
+// provider-neutral definitions sent on the native tool-calling channel. The
+// registry already applies role-scoped visibility and a stable sort, so the
+// request body stays byte-identical across iterations.
+func buildNativeToolDefinitions(reg *tools.Registry) []llm.ToolDefinition {
+	if reg == nil {
+		return nil
+	}
+	snaps := reg.VisibleToolSnapshots()
+	defs := make([]llm.ToolDefinition, 0, len(snaps))
+	for _, s := range snaps {
+		params := make([]llm.ToolParameter, 0, len(s.Parameters))
+		for _, p := range s.Parameters {
+			params = append(params, llm.ToolParameter{
+				Name:        p.Name,
+				Description: p.Description,
+				Required:    p.Required,
+			})
+		}
+		defs = append(defs, llm.ToolDefinition{
+			Name:        s.Name,
+			Description: s.Description,
+			Parameters:  params,
+		})
+	}
+	return defs
+}
+
 func (a *Agent) Run(targets []string, instruction string) {
 	// Stop-before-Run is a valid lifecycle outcome when exact cancellation wins
 	// the session admission race. Do not clone source, initialize browsers, or
@@ -1645,6 +1693,13 @@ func (a *Agent) Run(targets []string, instruction string) {
 	}
 	a.ctfMission = isExplicitCTFMission(instruction)
 	a.scanStart = time.Now()
+	// Resolve the tool-calling channel before the system prompt is built: the
+	// prompt differs depending on which one is active.
+	a.nativeToolCalling = a.cfg != nil && a.cfg.NativeToolCalls &&
+		a.client != nil && a.client.NativeToolCallingSupported()
+	if a.nativeToolCalling {
+		a.nativeToolDefs = buildNativeToolDefinitions(a.registry)
+	}
 	if a.scanBudget != nil {
 		a.scanBudget.start()
 	}
@@ -1875,7 +1930,19 @@ func (a *Agent) Run(targets []string, instruction string) {
 
 		category := reasoningRequestCategory(a.state)
 
-		response, usage, err := a.client.ChatWithUsage(msgsSnapshot)
+		var apiToolCalls []llm.ToolCall
+		var response string
+		var usage *llm.TokenUsage
+		var err error
+		if a.nativeToolCalling {
+			// Repair assistant/tool pairing at the boundary so pruning or an
+			// early exit on a previous iteration cannot make the history
+			// invalid for the provider.
+			msgsSnapshot = llm.NormalizeNativeToolHistory(msgsSnapshot)
+			response, apiToolCalls, usage, err = a.client.ChatWithUsageToolCalls(msgsSnapshot, a.nativeToolDefs)
+		} else {
+			response, usage, err = a.client.ChatWithUsage(msgsSnapshot)
+		}
 		a.recordTokenAttribution(usage, msgsSnapshot, iter, category, 0)
 		if usage != nil && usage.TotalTokens > 0 && a.state != nil {
 			a.state.FinishRecoveryPending = false
@@ -2021,7 +2088,10 @@ func (a *Agent) Run(targets []string, instruction string) {
 		// ConsecutiveErrors reset is handled by OnHealthyResponse hook below
 
 		// ── Hook: OnEmptyResponse ──
-		if strings.TrimSpace(response) == "" {
+		// A native tool-calling turn legitimately carries content:"" with a
+		// populated tool_calls array; counting that as an empty response would
+		// burn the 12-response budget without ever executing anything.
+		if strings.TrimSpace(response) == "" && len(apiToolCalls) == 0 {
 			emptyResult := a.hooks.Fire(OnEmptyResponse, a.state, nil)
 			a.emit(Event{Type: "message", Content: fmt.Sprintf("⚠️ LLM returned empty response (%d/12)", a.state.EmptyResponseCount), TotalTokens: tokenCount()})
 			if emptyResult.ForceSkip {
@@ -2047,7 +2117,17 @@ func (a *Agent) Run(targets []string, instruction string) {
 		cleanText := llm.CleanContent(responseClean)
 		cleanText = strings.TrimSpace(cleanText)
 
-		toolCalls := llm.ParseToolCalls(responseClean)
+		// Native calls take precedence: when the model answered on the native
+		// channel there is nothing to recover from the text. The XML parser
+		// stays as the fallback for every other backend — and for a native
+		// model that still emits tags out of habit.
+		toolCalls := apiToolCalls
+		nativeTurn := len(apiToolCalls) > 0
+		if nativeTurn {
+			toolCalls = llm.EnsureToolCallIDs(toolCalls, fmt.Sprintf("call_%d", iter))
+		} else {
+			toolCalls = llm.ParseToolCalls(responseClean)
+		}
 		// ── Drop empty-Args calls for tools that require parameters ──
 		// When a model drifts and splits a multi-parameter call's fields
 		// across separate <function=NAME> blocks, the parser produces
@@ -2060,7 +2140,10 @@ func (a *Agent) Run(targets []string, instruction string) {
 		// orphan-recovery path (which can re-associate stray params) or the
 		// no-tool compaction path. Tools whose params are ALL optional (e.g.
 		// code_search) legitimately accept an empty body and are kept.
-		if len(toolCalls) > 0 {
+		// Native calls are exempt: an argument-less native call is a model
+		// decision the registry can reject with a precise error the model gets
+		// to read, which is more useful than silently dropping the turn.
+		if len(toolCalls) > 0 && !nativeTurn {
 			kept := toolCalls[:0]
 			for _, tc := range toolCalls {
 				if len(tc.Args) == 0 && a.registry.RequiresParams(tc.Name) {
@@ -2182,12 +2265,22 @@ func (a *Agent) Run(targets []string, instruction string) {
 		// stays on-format. When NO tool call was found, store the raw response so
 		// the no-tool hook's format nudge reflects the real (malformed) output.
 		if malformedToolReason == "" {
-			assistantContent := response
-			if len(toolCalls) > 0 {
-				assistantContent = canonicalizeAssistantTurn(cleanText, toolCalls)
+			turn := llm.Message{Role: "assistant"}
+			if nativeTurn {
+				// On the native channel the provider expects the call structure
+				// to be replayed as-is; re-encoding it as XML would teach the
+				// model — which few-shot-mimics its own turns — to go back to
+				// the dialect we are migrating away from.
+				turn.Content = cleanText
+				turn.ToolCalls = llm.MessageToolCallsFrom(toolCalls)
+			} else {
+				turn.Content = response
+				if len(toolCalls) > 0 {
+					turn.Content = canonicalizeAssistantTurn(cleanText, toolCalls)
+				}
 			}
 			a.msgMu.Lock()
-			a.messages = append(a.messages, llm.Message{Role: "assistant", Content: assistantContent})
+			a.messages = append(a.messages, turn)
 			a.msgMu.Unlock()
 		}
 
@@ -2259,6 +2352,15 @@ func (a *Agent) Run(targets []string, instruction string) {
 			if a.stopped.Load() {
 				break
 			}
+			// A malformed native `arguments` payload is reported back to the
+			// model as a tool result rather than silently dropping the call: the
+			// turn stays healthy and the model gets to correct itself.
+			if tc.ArgumentError != "" {
+				a.emit(Event{Type: "tool_call", ToolName: tc.Name, ToolArgs: tc.Args})
+				a.emit(Event{Type: "tool_result", ToolName: tc.Name, ToolResult: tools.Result{Error: tc.ArgumentError}, TotalTokens: tokenCount()})
+				a.appendToolOutcome(tc, fmt.Sprintf("⚠️ Malformed arguments for %s: %s\nCall it again with a valid JSON object.", tc.Name, tc.ArgumentError))
+				continue
+			}
 			if tc.Name == "terminal_execute" {
 				if command, ok := tc.Args["command"]; ok {
 					contextID := ""
@@ -2294,9 +2396,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 				blockMsg := "⛔ ACTIVITY POLICY BLOCKED TOOL — " + reason + noteBlockedToolCall(a.state, tc.Name, tc.Args)
 				a.emit(Event{Type: "tool_call", ToolName: tc.Name, ToolArgs: tc.Args})
 				a.emit(Event{Type: "tool_result", ToolName: tc.Name, ToolResult: tools.Result{Output: blockMsg}, TotalTokens: tokenCount()})
-				a.msgMu.Lock()
-				a.messages = append(a.messages, llm.Message{Role: "user", Content: blockMsg})
-				a.msgMu.Unlock()
+				a.appendToolOutcome(tc, blockMsg)
 				continue
 			}
 
@@ -2304,9 +2404,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 				blockMsg := "⛔ PHASE RESTRICTION BLOCKED TOOL — " + reason + noteBlockedToolCall(a.state, tc.Name, tc.Args)
 				a.emit(Event{Type: "tool_call", ToolName: tc.Name, ToolArgs: tc.Args})
 				a.emit(Event{Type: "tool_result", ToolName: tc.Name, ToolResult: tools.Result{Output: blockMsg}, TotalTokens: tokenCount()})
-				a.msgMu.Lock()
-				a.messages = append(a.messages, llm.Message{Role: "user", Content: blockMsg})
-				a.msgMu.Unlock()
+				a.appendToolOutcome(tc, blockMsg)
 				continue
 			}
 
@@ -2314,9 +2412,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 				blockMsg := "⛔ AUTH PREREQUISITE GUARD BLOCKED TOOL — " + reason + noteBlockedToolCall(a.state, tc.Name, tc.Args)
 				a.emit(Event{Type: "tool_call", ToolName: tc.Name, ToolArgs: tc.Args})
 				a.emit(Event{Type: "tool_result", ToolName: tc.Name, ToolResult: tools.Result{Output: blockMsg}, TotalTokens: tokenCount()})
-				a.msgMu.Lock()
-				a.messages = append(a.messages, llm.Message{Role: "user", Content: blockMsg})
-				a.msgMu.Unlock()
+				a.appendToolOutcome(tc, blockMsg)
 				continue
 			}
 
@@ -2330,9 +2426,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 				blockMsg := "⛔ OUT-OF-SCOPE TARGET BLOCKED — " + reason + noteBlockedToolCall(a.state, tc.Name, tc.Args)
 				a.emit(Event{Type: "tool_call", ToolName: tc.Name, ToolArgs: tc.Args})
 				a.emit(Event{Type: "tool_result", ToolName: tc.Name, ToolResult: tools.Result{Output: blockMsg}, TotalTokens: tokenCount()})
-				a.msgMu.Lock()
-				a.messages = append(a.messages, llm.Message{Role: "user", Content: blockMsg})
-				a.msgMu.Unlock()
+				a.appendToolOutcome(tc, blockMsg)
 				continue
 			}
 
@@ -2478,9 +2572,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 					a.state.FinishRecoveryPending = true
 					rejectMsg := fmt.Sprintf("⚠️ FINISH REJECTED — %s\n\nDO NOT call finish again until you have done more testing.\nContinue with the NEXT PHASE of testing NOW.", finishResult.BlockReason)
 					a.emit(Event{Type: "tool_result", ToolName: "finish", ToolResult: tools.Result{Output: rejectMsg}, TotalTokens: tokenCount()})
-					a.msgMu.Lock()
-					a.messages = append(a.messages, llm.Message{Role: "user", Content: rejectMsg})
-					a.msgMu.Unlock()
+					a.appendToolOutcome(tc, rejectMsg)
 					// Finish was rejected — switch to validator temperature (0.0)
 					// for deterministic re-verification of coverage gaps
 					a.client.SetTemperature(TempValidator)
@@ -2524,9 +2616,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 					}
 				}
 			}
-			a.msgMu.Lock()
-			a.messages = append(a.messages, llm.Message{Role: "user", Content: resultMsg})
-			a.msgMu.Unlock()
+			a.appendToolOutcome(tc, resultMsg)
 
 			// ── Per-role temperature switching ──
 			// Adjust LLM temperature based on what the agent is about to do

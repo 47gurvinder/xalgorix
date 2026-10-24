@@ -150,6 +150,18 @@ type Config struct {
 	// values mean "use the built-in default".
 	LLMTimeoutSeconds int
 
+	// NativeToolCalls enables OpenAI-style native tool calling on the
+	// OpenAI-compatible path (llama.cpp/llama-server, Ollama, vLLM, OpenAI)
+	// instead of the XML-in-text protocol. When enabled, tool definitions are
+	// sent as a `tools` array and tool calls are read from `tool_calls`, which
+	// lets llama-server constrain the output with a grammar derived from the
+	// schema — a malformed call becomes impossible, and models that were never
+	// trained on the XML dialect still produce executable calls. Requires a
+	// backend that speaks the OpenAI chat-completions tool protocol; Anthropic,
+	// Gemini and the Responses API keep using the XML path regardless.
+	// XALGORIX_NATIVE_TOOL_CALLS, default false.
+	NativeToolCalls bool
+
 	// Runtime settings
 	RuntimeBackend string // XALGORIX_RUNTIME_BACKEND — always "native"
 	Workspace      string // XALGORIX_WORKSPACE — workspace root dir
@@ -463,6 +475,7 @@ func load() *Config {
 		LLMContextWindow:        envOrInt("XALGORIX_LLM_CONTEXT_WINDOW", 128000),
 		ContextCompactRatio:     envOrFloat("XALGORIX_CONTEXT_COMPACT_RATIO", 0.75),
 		LLMTimeoutSeconds:       envOrInt("XALGORIX_LLM_TIMEOUT_SECONDS", 600),
+		NativeToolCalls:         envOrBool("XALGORIX_NATIVE_TOOL_CALLS", false),
 		MemCompTimeout:          envOrInt("XALGORIX_MEMORY_COMPRESSOR_TIMEOUT", 30),
 
 		// Gemini content-filter posture (native Gemini API path only). Default

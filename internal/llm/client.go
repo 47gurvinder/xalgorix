@@ -27,9 +27,20 @@ import (
 )
 
 // Message represents a chat message.
+//
+// ToolCalls and ToolCallID are only populated on the native (OpenAI-style)
+// tool-calling channel. Both are omitempty, so the Anthropic, Gemini and
+// Responses wire formats are byte-identical when the feature is off — and the
+// agent rebuilds plain messages for those protocols anyway.
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+
+	// ToolCalls is set on an assistant turn that invoked tools natively.
+	ToolCalls []MessageToolCall `json:"tool_calls,omitempty"`
+
+	// ToolCallID is the id of the call this message answers (role:"tool").
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // StreamChunk is a piece of streaming response.
@@ -323,6 +334,10 @@ type chatRequest struct {
 	// MaxCompletionTokens is set per request (see buildChatRequest).
 	MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
+	// Tools carries the native tool definitions. Only populated when native
+	// tool calling is enabled (XALGORIX_NATIVE_TOOL_CALLS) and the endpoint
+	// speaks the OpenAI chat-completions protocol.
+	Tools []chatTool `json:"tools,omitempty"`
 }
 
 // streamOptions opts into usage stats for OpenAI-compatible streaming
@@ -372,8 +387,14 @@ func (f *contentField) UnmarshalJSON(data []byte) error {
 
 // chatChoice represents a response choice.
 type chatChoice struct {
-	Delta   struct{ Content contentField } `json:"delta"`
-	Message struct{ Content contentField } `json:"message"`
+	Delta struct {
+		Content   contentField   `json:"content"`
+		ToolCalls []chatToolCall `json:"tool_calls"`
+	} `json:"delta"`
+	Message struct {
+		Content   contentField   `json:"content"`
+		ToolCalls []chatToolCall `json:"tool_calls"`
+	} `json:"message"`
 }
 
 // chatResponse is the OpenAI-compatible response.
@@ -885,7 +906,40 @@ func (c *Client) Chat(messages []Message) (string, error) {
 
 // ChatWithUsage sends a non-streaming chat request and returns the full response along with per-request token usage.
 func (c *Client) ChatWithUsage(messages []Message) (string, *TokenUsage, error) {
-	return c.chatWithRetry(messages)
+	return c.chatWithRetry(messages, nil, nil)
+}
+
+// ChatWithUsageToolCalls is ChatWithUsage plus the native tool-calling channel:
+// the definitions are offered to the model and any calls it makes come back
+// alongside the text.
+//
+// Passing an empty tools slice is exactly equivalent to ChatWithUsage. Only the
+// OpenAI chat-completions path understands the tools/tool_calls wire format;
+// every other protocol ignores the definitions and returns no calls, which
+// leaves the XML parser in parser.go as the sole tool channel there.
+func (c *Client) ChatWithUsageToolCalls(messages []Message, tools []ToolDefinition) (string, []ToolCall, *TokenUsage, error) {
+	var calls []ToolCall
+	content, usage, err := c.chatWithRetry(messages, tools, &calls)
+	return content, calls, usage, err
+}
+
+// NativeToolCallingSupported reports whether the resolved endpoint speaks the
+// OpenAI chat-completions tool protocol — the only wire format where sending
+// `tools` and reading `tool_calls` is understood.
+//
+// It resolves the endpoint without touching key rotation, so calling it does
+// not advance the round-robin of API keys.
+func (c *Client) NativeToolCallingSupported() bool {
+	ep, err := c.resolveRequestEndpoint(c.loadCtx())
+	if err != nil {
+		return false
+	}
+	// The Responses API has its own tool-calling shape, which responses.go does
+	// not model — keep it on the XML path rather than half-supporting it.
+	if ep.HeaderStyle == headerStyleResponses {
+		return false
+	}
+	return !c.usesAnthropicAPI(ep.URL) && !c.usesGeminiAPI(ep.URL)
 }
 
 // minimaxUsageShapeOnce guarantees the redacted usage-structure diagnostic is
@@ -1173,7 +1227,13 @@ func (c *Client) buildAnthropicSystem(systemPrompt string) any {
 	return systemPrompt
 }
 
-func (c *Client) chatWithRetry(messages []Message) (string, *TokenUsage, error) {
+// chatWithRetry owns the retry/backoff loop around a single chat call.
+//
+// tools carries the native tool definitions (nil on the legacy XML path), and
+// callsOut — when non-nil — receives the native tool calls produced by the
+// attempt that succeeded. Using an out-parameter instead of a fourth return
+// value keeps the fourteen error paths below untouched.
+func (c *Client) chatWithRetry(messages []Message, tools []ToolDefinition, callsOut *[]ToolCall) (string, *TokenUsage, error) {
 	maxRetries := c.cfg.LLMMaxRetries
 	if maxRetries < 3 {
 		maxRetries = 3
@@ -1219,7 +1279,7 @@ func (c *Client) chatWithRetry(messages []Message) (string, *TokenUsage, error) 
 			return "", nil, fmt.Errorf("LLM request canceled: %w", ctx.Err())
 		}
 
-		result, usage, err := c.doChatWithUsage(messages)
+		result, usage, err := c.doChatWithUsage(messages, tools, callsOut)
 		if err == nil {
 			return result, usage, nil
 		}
@@ -1541,12 +1601,15 @@ func (c *Client) ChatStream(messages []Message) <-chan StreamChunk {
 
 // doChat performs a single non-streaming API call.
 func (c *Client) doChat(messages []Message) (string, error) {
-	resp, _, err := c.doChatWithUsage(messages)
+	resp, _, err := c.doChatWithUsage(messages, nil, nil)
 	return resp, err
 }
 
 // doChatWithUsage performs a single non-streaming API call and returns per-request token usage.
-func (c *Client) doChatWithUsage(messages []Message) (out string, usage *TokenUsage, err error) {
+//
+// tools and callsOut enable the native tool-calling channel; both are nil on
+// the legacy XML path, where the request body must stay byte-identical.
+func (c *Client) doChatWithUsage(messages []Message, tools []ToolDefinition, callsOut *[]ToolCall) (out string, usage *TokenUsage, err error) {
 	// Panic boundary (R1.5): any panic in the LLM client (JSON
 	// marshaling, header construction, HTTP transport panic) is
 	// converted into a typed error so the caller can decide whether to
@@ -1644,6 +1707,12 @@ func (c *Client) doChatWithUsage(messages []Message) (out string, usage *TokenUs
 		}
 	} else {
 		reqBody := c.buildChatRequest(model, messages, endpoint, false)
+		// Native tool definitions only travel on the OpenAI-compatible branch;
+		// the Anthropic, Gemini and Responses paths are handled above and keep
+		// using the XML dialect.
+		if len(tools) > 0 {
+			reqBody.Tools = buildChatTools(tools)
+		}
 		body, err = json.Marshal(reqBody)
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -1765,6 +1834,9 @@ func (c *Client) doChatWithUsage(messages []Message) (out string, usage *TokenUs
 		c.totalOut += usage.CompletionTokens
 		c.totalCached += cached
 		c.mu.Unlock()
+	}
+	if callsOut != nil {
+		*callsOut = parseOpenAIToolCalls(chatResp.Choices[0].Message.ToolCalls)
 	}
 	return string(chatResp.Choices[0].Message.Content), usage, nil
 }
