@@ -25,6 +25,12 @@ var sleepMagnitudeRe = regexp.MustCompile(`(?:sleep|pg_sleep|delay)\s*[('"\[:\s]
 var cveIDRe = regexp.MustCompile(`(?i)\bCVE-[0-9]{4}-[0-9]{4,7}\b`)
 var provedRequestRE = regexp.MustCompile(`(?im)^\s*(?:vulnerable path|exploit(?: request)?|probe(?: request)?)\s*:\s*(GET|POST|PUT|PATCH|DELETE|HEAD)\s+(\S+)`)
 var standaloneSQLiRe = regexp.MustCompile(`(?:^|[^a-z0-9])sqli(?:$|[^a-z0-9])`)
+
+// standaloneRCERe matches the "rce" acronym only as a whole word. A bare
+// strings.Contains(lower, "rce") also fires inside "resource", "source",
+// "commerce", "force", etc. — misclassifying e.g. "Cross-Origin Resource
+// Sharing" as RCE, which breaks class-based dedup and the rce-boundary rule.
+var standaloneRCERe = regexp.MustCompile(`(?:^|[^a-z0-9])rce(?:$|[^a-z0-9])`)
 var sourceMapSecretValueRe = regexp.MustCompile(`(?i)(?:AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:ghp|github_pat|xox[baprs]|sk_live)_[A-Za-z0-9_-]{12,}|(?:password|passwd|client_secret|api[_-]?key|secret[_-]?key|database_url)\s*[:=]\s*["'][^"'\r\n]{12,}["'])`)
 var unixIdentityOutputRe = regexp.MustCompile(`(?i)\buid=\d+\([^)]+\)(?:\s+gid=\d+\([^)]+\))?`)
 var unixPasswdRootLineRe = regexp.MustCompile(`(?m)^root:[^:\r\n]*:0:0:`)
@@ -1173,6 +1179,22 @@ func findDuplicateVulnerabilityForReport(existing []Vulnerability, title, descri
 	return findDuplicateVulnerabilityWithRetry(existing, title, description, cve, cwe, target, endpoint, true)
 }
 
+// isTargetWideVulnClass reports whether a vuln class is a property of the whole
+// target/server (one logical finding per target) rather than a per-endpoint
+// bug. The same debug mode, missing security header, exposed server version,
+// CORS policy, or clickjacking posture manifests on every path, so reporting it
+// once per endpoint is a duplicate. Per-endpoint classes (sqli, xss, idor,
+// ssrf, lfi, rce, ...) are deliberately excluded: different endpoints there are
+// genuinely different instances and must stay separate.
+func isTargetWideVulnClass(vulnType string) bool {
+	switch vulnType {
+	case "debug_disclosure", "missing_header", "version_disclosure", "cors", "clickjacking":
+		return true
+	default:
+		return false
+	}
+}
+
 func findDuplicateVulnerabilityWithRetry(existing []Vulnerability, title, description, cve, cwe, target, endpoint string, retryUnverified bool) (Vulnerability, string, bool) {
 	normalizedTitle := normalizeFindingText(title)
 	// Endpoints use the templated key so object-ID variants of the same path
@@ -1226,6 +1248,27 @@ func findDuplicateVulnerabilityWithRetry(existing []Vulnerability, title, descri
 			return vuln, fmt.Sprintf("⚠️ DUPLICATE: Same vulnerability type '%s' already reported on endpoint '%s' as %s ('%s'). Skipping.\nIf this is genuinely different, use a distinct endpoint or describe how it differs.",
 				vulnType, endpoint, vuln.ID, vuln.Title), true
 		}
+
+		// Target-wide classes (debug/stack-trace disclosure, missing security
+		// headers, version/tech disclosure, CORS policy, clickjacking) are a
+		// property of the TARGET/server, not a per-endpoint bug: the same debug
+		// mode, missing header, or CORS policy manifests on every path. Collapse
+		// them to ONE finding per (target, class) regardless of endpoint — the
+		// model otherwise reports the identical root cause once per path it hit
+		// (observed: a single Laravel debug mode reported as 4 findings).
+		if sameTarget && vulnType != "" && vulnType == existingType && isTargetWideVulnClass(vulnType) {
+			return vuln, fmt.Sprintf("⚠️ DUPLICATE: '%s' is a target-wide issue already reported as %s ('%s'). It manifests on many endpoints but is ONE finding per target — do not re-report it per endpoint.",
+				vulnType, vuln.ID, vuln.Title), true
+		}
+
+		// NOTE: we deliberately do NOT collapse same-class findings merely because
+		// both lack a populated endpoint. Findings routinely carry the endpoint in
+		// the TITLE while leaving the endpoint field empty (observed: two distinct
+		// XXE sinks reported as "...POST /aide/doc/bnum" and "...POST /.env", both
+		// with an empty endpoint field). An empty-endpoint type match is therefore
+		// NOT evidence of the same instance, and merging on it would destroy a
+		// genuinely distinct vulnerability. Per-endpoint instances must differ by a
+		// real endpoint signal; only the target-wide classes above dedup endpoint-free.
 
 		// Cross-type root-cause equivalence for code execution: prose in one
 		// report can still reclassify its keyword-extracted type (observed in
@@ -3959,6 +4002,8 @@ func extractVulnTypeFromText(lower string) string {
 		{"xxe", []string{"xxe", "xml external entity"}},
 		{"open_redirect", []string{"open redirect", "url redirect", "unvalidated redirect"}},
 		{"auth_bypass", []string{"authentication bypass", "auth bypass", "login bypass", "auth flow"}},
+		{"user_enumeration", []string{"user enumeration", "username enumeration", "account enumeration", "email enumeration", "member enumeration", "member id enumeration", "account recovery enumeration"}},
+		{"debug_disclosure", []string{"stack trace", "stacktrace", "traceback", "debug mode", "debug page", "debug stack", "exposes stack trace", "exception disclosure", "verbose exception", "whoops error", "werkzeug debugger", "django debug", "symfony profiler"}},
 		{"info_disclosure", []string{"information disclosure", "info disclosure", "sensitive data exposure", "data leak", "api key", "credential leak", "password leak", "exposed secret", "token leak", "verbose error"}},
 		{"missing_header", []string{"missing header", "security header", "x-frame-options", "content-security-policy", "hsts", "x-content-type"}},
 		{"version_disclosure", []string{"version disclosure", "server header", "x-powered-by", "technology disclosure", "fingerprint"}},
@@ -3977,6 +4022,15 @@ func extractVulnTypeFromText(lower string) string {
 				// of a data store, not an SQL-injection claim. Require the acronym
 				// to stand alone while keeping phrases such as "SQL injection".
 				if standaloneSQLiRe.MatchString(lower) {
+					return vt.typeName
+				}
+				continue
+			}
+			if kw == "rce" {
+				// "rce" as a bare substring matches "resource"/"source"/etc.
+				// Require the acronym to stand alone; the full phrases ("remote
+				// code execution", "code execution") still match normally.
+				if standaloneRCERe.MatchString(lower) {
 					return vt.typeName
 				}
 				continue
@@ -4019,7 +4073,16 @@ func cweToVulnType(cwe string) string {
 		return "open_redirect"
 	case "287", "288", "305", "306":
 		return "auth_bypass"
-	case "200", "209", "532":
+	case "203", "204":
+		// CWE-203/204: observable discrepancy / response differences — the
+		// signature of username/account enumeration.
+		return "user_enumeration"
+	case "209":
+		// CWE-209: error message containing sensitive info — i.e. verbose
+		// stack-trace/debug disclosure. This is a target-wide class (one config
+		// per app), so bucket it with debug_disclosure, not generic info leak.
+		return "debug_disclosure"
+	case "200", "532":
 		return "info_disclosure"
 	case "284", "285", "566", "639", "862", "863":
 		return "idor"
