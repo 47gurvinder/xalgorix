@@ -107,6 +107,51 @@ func isStaticAssetPath(path string) bool {
 	return false
 }
 
+// contentDiscoveryArtifactSuffixes are file extensions whose endpoints are
+// static downloads / backups / dumps — content-discovery EXPOSURE targets, not
+// injection surface (no parameter to inject into).
+var contentDiscoveryArtifactSuffixes = []string{
+	".log", ".bak", ".old", ".orig", ".save", ".swp", ".swo", ".tmp",
+	".sql", ".dump", ".backup", ".zip", ".tar", ".tar.gz", ".tgz", ".gz",
+	".rar", ".7z", ".war", ".jar", ".class",
+}
+
+// contentDiscoveryArtifactMarkers are substrings that mark an endpoint as a
+// content-discovery artifact: VCS metadata, server-config/secret files, OS and
+// editor cruft. These are discovered by dirbusting to flag EXPOSURE (handled by
+// the information-exposure class), but they are static files that cannot hold an
+// injection, so they must not owe sqli/xss/ssrf/… obligations.
+var contentDiscoveryArtifactMarkers = []string{
+	"/.git", "/.svn", "/.hg", "/.bzr", "/cvs/", "/.idea", "/.vscode",
+	".htaccess", ".htpasswd", "web.config", "/.env", ".npmrc", ".dockerignore",
+	".gitignore", ".ds_store", "thumbs.db", "desktop.ini", "access.log",
+	"error.log", "error_log",
+}
+
+// isContentDiscoveryArtifact reports whether a path is a non-injectable
+// content-discovery artifact (VCS metadata, config/secret file, log, OS cruft,
+// backup/dump) or the scanner's OWN synthetic 404-baseline control probe. Such
+// endpoints owe information-exposure only, never injection classes: holding them
+// as per-class injection obligations is unsatisfiable and blocks convergence.
+func isContentDiscoveryArtifact(path string) bool {
+	lp := strings.ToLower(strings.SplitN(path, "?", 2)[0])
+	// The engine's own 404-baseline control probe (random hex suffix).
+	if strings.Contains(lp, "__xalgorix") || strings.Contains(lp, "nonexistent_control") {
+		return true
+	}
+	for _, m := range contentDiscoveryArtifactMarkers {
+		if strings.Contains(lp, m) {
+			return true
+		}
+	}
+	for _, s := range contentDiscoveryArtifactSuffixes {
+		if strings.HasSuffix(lp, s) {
+			return true
+		}
+	}
+	return false
+}
+
 func isGraphQLPath(path string) bool {
 	return strings.Contains(strings.ToLower(path), "graphql")
 }
@@ -268,6 +313,13 @@ func deriveEndpointFeatures(se *SurfaceEndpoint, state *ScanState) []string {
 	path := se.Path
 	if isStaticAssetPath(path) {
 		features = append(features, "static-asset")
+	}
+	// Content-discovery artifacts (VCS metadata, config/secret files, logs, OS
+	// cruft, backups, the scanner's own control probe) are discovery/exposure
+	// targets, not injection surface. Flagged only under ConvergeFinish so the
+	// legacy applicability is byte-identical when the flag is off.
+	if state != nil && state.ConvergeFinish && isContentDiscoveryArtifact(path) {
+		features = append(features, "discovery-artifact")
 	}
 	if isGraphQLPath(path) {
 		features = append(features, "graphql")
@@ -477,6 +529,13 @@ func (se *SurfaceEndpoint) ApplicableClasses() []string {
 	if se.HasFeature("static-asset") {
 		// Discovery-only: content discovery covers it; no injection/authz
 		// obligation exists for robots.txt or an asset path.
+		return []string{"information-exposure"}
+	}
+	if se.HasFeature("discovery-artifact") {
+		// VCS metadata, config/secret files, logs, OS cruft, backups, and the
+		// scanner's own control probe: an exposure finding if reachable, but a
+		// static file has no parameter to inject — so it owes information-exposure
+		// only, never the injection-class floor. (ConvergeFinish-gated feature.)
 		return []string{"information-exposure"}
 	}
 
