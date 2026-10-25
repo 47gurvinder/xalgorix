@@ -113,6 +113,16 @@ const (
 	// every measurable obligation is met, so it reads as a terminal "not
 	// individually executed" state rather than completed coverage.
 	DispositionCoverageComplete = "coverage_complete"
+
+	// DispositionCoverageSufficient is ENGINE-SET only: the principled finish
+	// (XALGORIX_CONVERGE_FINISH) closes a generic per-endpoint class task once the
+	// class has been exercised across the surface, per-route coverage has cleared
+	// the threshold, and no new finding has appeared for the finding-idle tail —
+	// i.e. the exhaustive every-route×every-class bar is in diminishing returns.
+	// The residual untested (route,class) pairs are recorded in the report. It is
+	// NOT a blocked_* state: it reads as a terminal "coverage sufficient, residual
+	// recorded" rather than failed or blocked work.
+	DispositionCoverageSufficient = "coverage_sufficient"
 )
 
 // vagueDispositionReasons are the shortcut rationalizations that cannot clear

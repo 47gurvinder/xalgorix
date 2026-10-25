@@ -378,20 +378,34 @@ func (a *Agent) autoFinalizeIfPlanComplete() bool {
 	if a.state == nil || a.scanBudget == nil || a.state.DelegatedAgent {
 		return false // root scans only; specialists close their own lane
 	}
-	limit := a.planCompleteFindingIdleLimit()
-	if limit <= 0 {
-		return false // disabled
-	}
 	if a.state.Iteration < a.state.MinIterations {
 		return false
 	}
-	// Plan must exist and be exhausted: no pending/active work remains.
 	if a.state.Plan == nil || len(a.state.Plan.Tasks) == 0 {
 		return false
 	}
-	if _, _, _, unfinished := a.PlanDisposition(); unfinished > 0 {
-		return false
+
+	// Terminal mode. Legacy: the plan is fully exhausted (no pending/active
+	// work). ConvergeFinish: the plan is SATURATED — the only open work is generic
+	// per-endpoint class coverage (and class-less exploratory tasks) past the
+	// route-coverage threshold, i.e. the unachievable every-route×every-class bar
+	// is in diminishing returns. Each mode has its own finding-idle tail; neither
+	// fires while any concrete/targeted work remains.
+	_, _, _, unfinished := a.PlanDisposition()
+	exhausted := unfinished == 0
+	saturated := false
+	limit := a.planCompleteFindingIdleLimit()
+	if !exhausted {
+		if !saturatedForFinish(a.state) {
+			return false
+		}
+		saturated = true
+		limit = a.convergeFinishIdleLimit()
 	}
+	if limit <= 0 {
+		return false // disabled
+	}
+
 	cur := 0
 	if a.scanCtx != nil {
 		cur = len(reporting.GetVulnerabilitiesForContext(a.scanCtx.ID))
@@ -405,8 +419,24 @@ func (a *Agent) autoFinalizeIfPlanComplete() bool {
 	if a.state.FindingIdleIterations < limit {
 		return false
 	}
+	// A saturated (not fully-exhausted) finish closes the remaining soft tasks so
+	// the plan reaches a clean terminal state and the residual (route,class) pairs
+	// are recorded before the honest completion assessment runs.
+	if saturated {
+		closeSoftTasksForFinish(a.state)
+	}
 	a.emitPlanCompleteFinish(cur, limit)
 	return true
+}
+
+// convergeFinishIdleLimit is the no-new-finding tail for the ConvergeFinish
+// saturated finish. A nonzero cfg override wins (negative disables, surfaced as
+// <= 0 to the caller); otherwise the built-in default applies.
+func (a *Agent) convergeFinishIdleLimit() int {
+	if a.cfg != nil && a.cfg.ConvergeFinishIdle != 0 {
+		return a.cfg.ConvergeFinishIdle
+	}
+	return convergeFinishDefaultIdle
 }
 
 // emitPlanCompleteFinish finalizes a plan-complete, finding-idle scan through

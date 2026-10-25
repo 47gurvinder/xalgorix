@@ -444,6 +444,12 @@ type ScanState struct {
 	// endpoint accounting so a polluted coverage baseline can't block convergence
 	// (see endpoint_hygiene.go).
 	EndpointHygiene bool
+	// ConvergeFinish mirrors cfg.ConvergeFinish: stop content-discovery artifacts
+	// from owing injection classes, and principled-finish a saturated scan (route
+	// coverage past threshold + finding-idle tail) instead of churning the
+	// unachievable every-route×every-class bar (see convergence_finish.go). The
+	// finding-idle tail length is read from cfg (convergeFinishIdleLimit).
+	ConvergeFinish bool
 	// CoverageEpoch is the current coverage epoch (0 = not started / disabled).
 	CoverageEpoch int
 	// CoverageBaseline is the frozen endpoint snapshot the current epoch tests

@@ -132,6 +132,26 @@ type Config struct {
 	// non-endpoints, never a real route. XALGORIX_ENDPOINT_HYGIENE, default false.
 	EndpointHygiene bool
 
+	// ConvergeFinish resolves the deepest non-convergence cause: the engine
+	// demands every discovered route be tested for every applicable injection
+	// class, which is unachievable on large real surfaces, so the finish gate
+	// never opens and scans churn to the watchdog (dropping coverage
+	// unpredictably). Two parts: (1) content-discovery artifacts (VCS metadata,
+	// server-config/secret files, logs, OS cruft, the scanner's own control
+	// probe) no longer owe injection classes — only information-exposure — since
+	// a static file has no parameter to inject; (2) a principled finish: once the
+	// structured methodology is done, per-route coverage clears a threshold, and
+	// no new finding appears for a sustained tail, the remaining per-endpoint
+	// class tasks close as coverage-sufficient with the residual (route,class)
+	// pairs recorded in the report. XALGORIX_CONVERGE_FINISH, default false (off).
+	ConvergeFinish bool
+
+	// ConvergeFinishIdle is the no-new-finding tail (iterations) for the
+	// ConvergeFinish principled finish, counted only once a scan is saturated
+	// (structured work done, route coverage past threshold). 0 uses the built-in
+	// default. XALGORIX_CONVERGE_FINISH_IDLE.
+	ConvergeFinishIdle int
+
 	// ToolArchiveMinBytes is the minimum raw-output size a tool result must
 	// have before it is archived/stubbed. Smaller results stay in-context
 	// verbatim (they are cheap to carry and often high-signal).
@@ -500,6 +520,8 @@ func load() *Config {
 		EpochCoverage:           envOrBool("XALGORIX_EPOCH_COVERAGE", false),
 		ConvergeReconcile:       envOrBool("XALGORIX_CONVERGE_RECONCILE", false),
 		EndpointHygiene:         envOrBool("XALGORIX_ENDPOINT_HYGIENE", false),
+		ConvergeFinish:          envOrBool("XALGORIX_CONVERGE_FINISH", false),
+		ConvergeFinishIdle:      envOrInt("XALGORIX_CONVERGE_FINISH_IDLE", 0),
 		ToolArchiveMinBytes:     envOrInt("XALGORIX_TOOL_ARCHIVE_MIN_BYTES", 1500),
 		ToolArchiveActiveWindow: envOrInt("XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW", 8),
 		LLMContextWindow:        envOrInt("XALGORIX_LLM_CONTEXT_WINDOW", 128000),

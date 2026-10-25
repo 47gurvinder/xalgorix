@@ -172,6 +172,19 @@ func scanTelemetrySummary(state *ScanState, status string, reasons []string) str
 	fmt.Fprintf(&b, "tested endpoint×class pairs: %d (endpoints discovered: %d, tested: %d)\n",
 		pairs, len(state.DiscoveredEndpoints), len(state.EndpointsTested))
 
+	// Principled-finish residual: when the scan closed per-endpoint class tasks as
+	// coverage-sufficient, record the (route,class) pairs that were NOT
+	// individually retested, so the diminishing-returns tradeoff is transparent in
+	// the report rather than silent. The class itself was exercised across the
+	// surface; these are the specific untested endpoints.
+	if hasCoverageSufficientTask(state) {
+		touched, applicable := routeTouchCounts(state)
+		fmt.Fprintf(&b, "principled finish: route coverage %d/%d applicable injectable routes tested\n", touched, applicable)
+		if gaps := CoverageGaps(state, coverageDenominator(state)); len(gaps) > 0 {
+			fmt.Fprintf(&b, "coverage residual (class exercised target-wide; these endpoints not individually retested):\n%s", FormatGaps(gaps))
+		}
+	}
+
 	// Skills.
 	if names := LoadedSkillNames(state); len(names) > 0 {
 		fmt.Fprintf(&b, "loaded skills: %s (failed lookups: %d)\n", strings.Join(names, ", "), state.FailedSkillLoads)
