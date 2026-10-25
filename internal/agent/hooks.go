@@ -430,6 +430,19 @@ type ScanState struct {
 	AdvisoryLeadsNudged          map[string]bool // exact CVE/advisory leads already committed to the ledger
 	OASTVerificationNudged       map[string]bool // raw callback tokens already routed to class-aware verify_oob
 	OASTVerificationReminders    map[string]int  // bounded re-nudges when a positive poll is followed by more polling instead of verify_oob
+
+	// ── Epoch-based coverage convergence (XALGORIX_EPOCH_COVERAGE) ──
+	// EpochCoverage mirrors cfg.EpochCoverage (set once at scan start) so the
+	// coverage predicates stay pure functions of ScanState.
+	EpochCoverage bool
+	// CoverageEpoch is the current coverage epoch (0 = not started / disabled).
+	CoverageEpoch int
+	// CoverageBaseline is the frozen endpoint snapshot the current epoch tests
+	// against. Per-endpoint coverage completion is measured against this set,
+	// not the live-growing DiscoveredEndpoints, so class tasks can converge.
+	// Endpoints discovered mid-epoch are folded into a later baseline and
+	// tested before finish — never dropped.
+	CoverageBaseline []string
 }
 
 // NewScanState creates a zero-value ScanState with initialized maps.
@@ -3743,6 +3756,10 @@ func reconcilePlan(state *ScanState) {
 	if state == nil || state.Plan == nil {
 		return
 	}
+	// Open epoch 1 once there is surface to freeze, so every coverage
+	// evaluation below sees a stable denominator (no-op unless the
+	// XALGORIX_EPOCH_COVERAGE flag is on).
+	ensureCoverageEpoch(state)
 	for _, t := range state.Plan.Tasks {
 		if t.Status != TaskPending && t.Status != TaskActive {
 			continue
@@ -3796,6 +3813,11 @@ func reconcilePlan(state *ScanState) {
 			}
 		}
 	}
+	// With the epoch's obligations met, either converge (baseline == full
+	// surface, nothing new) or roll into the next epoch to cover surface
+	// discovered since the baseline was frozen (no-op unless epoch coverage is
+	// on). This runs after marking so it sees the epoch's final task states.
+	advanceCoverageEpoch(state)
 }
 
 // extractEndpointsFromNotes pulls URL paths out of the saved notes so the

@@ -1802,6 +1802,9 @@ func (a *Agent) Run(targets []string, instruction string) {
 	// never of specialist availability. Single-agent scans owe the same
 	// deep reconnaissance as wave-enabled scans.
 	a.state.DeepReconRequired = a.isDeepMode() && a.scanIntensity == activityModeActive
+	// Epoch-based coverage convergence is derived once from config so the
+	// coverage predicates read a single ScanState flag (never the global cfg).
+	a.state.EpochCoverage = a.cfg != nil && a.cfg.EpochCoverage
 	// Single-agent mode is an intentional configuration, not a failure
 	// state; derived once so every delegation path reads one flag.
 	a.state.DelegationEnabled = a.delegationEnabled()

@@ -105,6 +105,15 @@ type Config struct {
 	// iteration. XALGORIX_BOUNDED_CONTEXT, default false (off).
 	BoundedContext bool
 
+	// EpochCoverage enables epoch-based coverage convergence: per-endpoint
+	// coverage completion is measured against a frozen surface snapshot
+	// (advanced in bounded epochs) instead of the live-growing discovered
+	// set, so class tasks can actually close and the scan reaches a clean
+	// terminal state instead of chasing a receding bar forever. No coverage is
+	// dropped — every discovered endpoint is folded into a later epoch and
+	// tested before finish. XALGORIX_EPOCH_COVERAGE, default false (off).
+	EpochCoverage bool
+
 	// ToolArchiveMinBytes is the minimum raw-output size a tool result must
 	// have before it is archived/stubbed. Smaller results stay in-context
 	// verbatim (they are cheap to carry and often high-signal).
@@ -470,6 +479,7 @@ func load() *Config {
 		AdvancePastStuckTasks:   envOrBool("XALGORIX_ADVANCE_PAST_STUCK", false),
 		MaxStuckAdvances:        envOrInt("XALGORIX_MAX_STUCK_ADVANCES", 3),
 		BoundedContext:          envOrBool("XALGORIX_BOUNDED_CONTEXT", false),
+		EpochCoverage:           envOrBool("XALGORIX_EPOCH_COVERAGE", false),
 		ToolArchiveMinBytes:     envOrInt("XALGORIX_TOOL_ARCHIVE_MIN_BYTES", 1500),
 		ToolArchiveActiveWindow: envOrInt("XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW", 8),
 		LLMContextWindow:        envOrInt("XALGORIX_LLM_CONTEXT_WINDOW", 128000),
