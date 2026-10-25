@@ -289,6 +289,10 @@ func NewClient(cfg *config.Config, opts ...Option) *Client {
 		pool = append(pool, cfg.APIKey)
 		pool = append(pool, cfg.APIKeys...)
 		if r := NewKeyRotator(pool); r != nil && r.Len() > 1 {
+			// Sticky/overflow failover when configured; round-robin otherwise.
+			if strings.EqualFold(strings.TrimSpace(cfg.KeyPoolStrategy), "sticky") {
+				r.SetSticky(true)
+			}
 			c.keyRotator = r
 		}
 	}

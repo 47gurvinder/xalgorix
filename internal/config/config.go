@@ -25,6 +25,7 @@ type Config struct {
 	APIBase             string   // XALGORIX_API_BASE — API endpoint
 	APIKey              string   // XALGORIX_API_KEY — API key
 	APIKeys             []string // XALGORIX_API_KEYS — additional provider API keys rotated to dodge provider rate limits (combined with APIKey)
+	KeyPoolStrategy     string   // XALGORIX_KEY_POOL_STRATEGY — "roundrobin" (default; both keys share load) or "sticky" (overflow failover: one key at a time, switch only on a rate limit)
 	DisableAutoDelegate bool     // XALGORIX_DISABLE_AUTO_DELEGATE — skip the deterministic specialist wave entirely
 	DisabledSpecialists []string // XALGORIX_DISABLED_SPECIALISTS — comma-separated lane names to skip
 	Checklist           string   // XALGORIX_CHECKLIST - full or professional
@@ -500,6 +501,7 @@ func load() *Config {
 		APIBase:                 envOr("XALGORIX_API_BASE", ""),
 		APIKey:                  envOr("XALGORIX_API_KEY", ""),
 		APIKeys:                 ParseAPIKeyList(envOr("XALGORIX_API_KEYS", "")),
+		KeyPoolStrategy:         envOr("XALGORIX_KEY_POOL_STRATEGY", "roundrobin"),
 		DisableAutoDelegate:     envOrBool("XALGORIX_DISABLE_AUTO_DELEGATE", false),
 		DisabledSpecialists:     envOrStringSlice("XALGORIX_DISABLED_SPECIALISTS"),
 		Checklist:               envOrChecklist(envOr("XALGORIX_CHECKLIST", "full")),

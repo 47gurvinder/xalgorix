@@ -61,6 +61,41 @@ func TestApplyKeyRotation_LegacyPrimaryMatch(t *testing.T) {
 	}
 }
 
+// Sticky/overflow mode: stay on one key until it rate-limits, then fail over to
+// the next and stay there (switch only on 429), instead of alternating.
+func TestKeyRotatorStickyFailover(t *testing.T) {
+	r := NewKeyRotator([]string{"k1", "k2"})
+	r.SetSticky(true)
+	// Stays on the first key across many healthy picks (no alternation).
+	for i := 0; i < 5; i++ {
+		if got := r.Pick(); got != "k1" {
+			t.Fatalf("sticky: pick %d = %q, want k1 (should not alternate)", i, got)
+		}
+	}
+	// k1 returns 429 → cooled → fail over to k2 and stay there.
+	r.MarkLastRateLimited()
+	for i := 0; i < 5; i++ {
+		if got := r.Pick(); got != "k2" {
+			t.Fatalf("sticky: after k1 429, pick %d = %q, want k2", i, got)
+		}
+	}
+	// k2 returns 429 → both now cooling; the rotator falls back to the
+	// soonest-recovering key (k1, cooled first) so there is always a key to try.
+	r.MarkLastRateLimited()
+	if got := r.Pick(); got != "k1" {
+		t.Fatalf("sticky: after k2 429, pick = %q, want fail-back to k1", got)
+	}
+}
+
+// Round-robin (default) still alternates — sticky must be opt-in.
+func TestKeyRotatorDefaultRoundRobin(t *testing.T) {
+	r := NewKeyRotator([]string{"k1", "k2"})
+	a, b := r.Pick(), r.Pick()
+	if a == b {
+		t.Errorf("default mode should alternate, got %q then %q", a, b)
+	}
+}
+
 func TestClonePreservesKeyRotator(t *testing.T) {
 	c := &Client{cfg: &config.Config{APIKey: ""}, keyRotator: NewKeyRotator([]string{"k1", "k2"})}
 	cl := c.Clone()
