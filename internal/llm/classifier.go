@@ -54,6 +54,32 @@ func ClassifyErrorString(rawErr string) ClassifiedError {
 		}
 	}
 
+	// 1b. Structured provider error code is authoritative when present. A
+	// transient per-minute rate-limit code (RPM/TPM) must not be reclassified as
+	// quota exhaustion just because the human-readable message happens to contain
+	// quota-ish wording — that misclassification made a recoverable 429 consume
+	// the whole rate-limit wait budget and pause the scan, instead of a short
+	// backoff + failover to another pooled key. "resource_exhausted" is left out
+	// deliberately (some providers reuse it for genuine quota) so it still falls
+	// through to the message-based checks below.
+	switch diagnosticErrorCode(rawErr) {
+	case "rate_limit_error", "rate_limit_exceeded", "tokens", "requests":
+		return ClassifiedError{
+			Class:   ErrorClassRateLimit,
+			Message: "LLM provider rate limit exceeded (requests or tokens per minute)",
+		}
+	case "insufficient_quota", "quota_exceeded", "usage_limit_reached", "billing_not_active":
+		return ClassifiedError{
+			Class:   ErrorClassQuotaExhausted,
+			Message: "LLM provider quota or credit balance exhausted (check account billing)",
+		}
+	case "overloaded_error":
+		return ClassifiedError{
+			Class:   ErrorClassOverloaded,
+			Message: "LLM provider is temporarily overloaded (upstream capacity saturated)",
+		}
+	}
+
 	// 2. Quota / Credit Exhaustion
 	// Note: Quota errors sometimes return HTTP 429, HTTP 402, or HTTP 400 with a billing/quota body.
 	if strings.Contains(errStr, "insufficient_quota") ||
