@@ -89,6 +89,53 @@ func epochObligationsMet(state *ScanState) bool {
 	return true
 }
 
+// taskIsMeasurable reports whether a task has a completion path the engine can
+// evaluate — a vuln class (per-endpoint or whole-target coverage) or one of the
+// structured engine tasks (recon, dirbust, auth-session) — as opposed to a
+// class-less exploratory hypothesis the coverage matrix cannot reconcile.
+func taskIsMeasurable(t *Task) bool {
+	if t == nil {
+		return false
+	}
+	if t.VulnClass != "" {
+		return true
+	}
+	switch t.ID {
+	case "recon", "dirbust", "auth-session":
+		return true
+	}
+	return false
+}
+
+// reconcilableExploratoryTask reports whether a still-open task is a class-less
+// exploratory hypothesis the convergence reconcile may close.
+func reconcilableExploratoryTask(t *Task) bool {
+	return t != nil && !taskIsMeasurable(t)
+}
+
+// measurableObligationsMet reports whether every MEASURABLE task is terminal, so
+// the only work still open is class-less exploratory tasks. It returns false for
+// a plan with no measurable task at all, so a degenerate plan never
+// auto-converges. Distinct from epochObligationsMet (which requires zero pending
+// tasks): the whole point here is that class-less tasks are still pending and
+// cannot be closed by any coverage predicate.
+func measurableObligationsMet(state *ScanState) bool {
+	if state == nil || state.Plan == nil {
+		return false
+	}
+	sawMeasurable := false
+	for _, t := range state.Plan.Tasks {
+		if !taskIsMeasurable(t) {
+			continue
+		}
+		sawMeasurable = true
+		if t.Status == TaskPending || t.Status == TaskActive {
+			return false
+		}
+	}
+	return sawMeasurable
+}
+
 // surfaceBeyondBaseline reports whether DiscoveredEndpoints contains any
 // endpoint not in the current frozen baseline — i.e. new surface appeared since
 // the epoch was frozen and still owes coverage.

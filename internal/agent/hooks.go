@@ -435,6 +435,11 @@ type ScanState struct {
 	// EpochCoverage mirrors cfg.EpochCoverage (set once at scan start) so the
 	// coverage predicates stay pure functions of ScanState.
 	EpochCoverage bool
+	// ConvergeReconcile mirrors cfg.ConvergeReconcile: once every measurable
+	// obligation is met, reconcilePlan closes the remaining class-less
+	// exploratory tasks so the scan converges instead of churning (see
+	// reconcilePlan / measurableObligationsMet).
+	ConvergeReconcile bool
 	// CoverageEpoch is the current coverage epoch (0 = not started / disabled).
 	CoverageEpoch int
 	// CoverageBaseline is the frozen endpoint snapshot the current epoch tests
@@ -3810,6 +3815,24 @@ func reconcilePlan(state *ScanState) {
 		default:
 			if taskCoverageComplete(state, t) {
 				t.Status = TaskCompleted
+			}
+		}
+	}
+	// Convergence reconcile (flag-gated): once every measurable obligation is
+	// terminal and the iteration floor is past, close the remaining class-less
+	// exploratory tasks. They have no VulnClass, so taskCoverageComplete can
+	// never reconcile them; left open they hold the scan in an unbounded churn at
+	// 100% systematic coverage (observed: 1,000–2,000+ iterations at a fully
+	// covered endpoint×class matrix). The matrix is already satisfied here, so
+	// this drops no measured coverage — it only stops the churn.
+	if state.ConvergeReconcile && state.Iteration >= state.MinIterations && measurableObligationsMet(state) {
+		for _, t := range state.Plan.Tasks {
+			if (t.Status == TaskPending || t.Status == TaskActive) && reconcilableExploratoryTask(t) {
+				t.Status = TaskSkipped
+				t.Disposition = DispositionCoverageComplete
+				if t.Notes == "" {
+					t.Notes = "engine: systematic endpoint×class coverage complete; class-less exploratory task not individually executed, closed at convergence"
+				}
 			}
 		}
 	}

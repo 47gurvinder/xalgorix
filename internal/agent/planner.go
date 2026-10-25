@@ -108,6 +108,11 @@ const (
 	// work (blocked_ prefix) rather than completed coverage, keeping the scan's
 	// completion status honest.
 	DispositionBlockedNoProgress = "blocked_no_progress"
+	// DispositionCoverageComplete is ENGINE-SET only: the convergence reconcile
+	// (XALGORIX_CONVERGE_RECONCILE) closes a class-less exploratory task once
+	// every measurable obligation is met, so it reads as a terminal "not
+	// individually executed" state rather than completed coverage.
+	DispositionCoverageComplete = "coverage_complete"
 )
 
 // vagueDispositionReasons are the shortcut rationalizations that cannot clear
