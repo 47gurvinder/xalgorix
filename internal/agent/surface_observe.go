@@ -151,6 +151,9 @@ func promoteDiscoveredEndpoint(state *ScanState, endpoint string) {
 	if endpoint == "" || isScanArtifactURL(endpoint) || isProbeArtifactEndpoint(endpoint) {
 		return
 	}
+	if state.EndpointHygiene && !isValidTargetEndpoint(endpoint) {
+		return
+	}
 	isTemplate := routeTemplateCovers(endpoint, endpoint)
 	if len(state.DiscoveredEndpoints) >= maxPromotedEndpoints && !isTemplate {
 		return
