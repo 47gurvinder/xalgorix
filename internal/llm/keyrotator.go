@@ -42,6 +42,10 @@ type KeyRotator struct {
 	idx      int
 	cooldown map[string]time.Time
 	last     string
+	// sticky selects overflow-failover instead of round-robin: keep using one key
+	// until it enters cooldown, then fail over to the next and stay there. Set once
+	// at construction via SetSticky.
+	sticky bool
 }
 
 // NewKeyRotator builds a rotator from the given candidate keys. Empty
@@ -78,6 +82,15 @@ func (r *KeyRotator) Pick() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
+	if r.sticky {
+		return r.pickStickyLocked(now)
+	}
+	return r.pickRoundRobinLocked(now)
+}
+
+// pickRoundRobinLocked advances one key per call, skipping cooling keys — both
+// keys carry load simultaneously, raising the effective rate ceiling.
+func (r *KeyRotator) pickRoundRobinLocked(now time.Time) string {
 	for range r.keys {
 		k := r.keys[r.idx%len(r.keys)]
 		r.idx++
@@ -88,6 +101,31 @@ func (r *KeyRotator) Pick() string {
 			return k
 		}
 	}
+	return r.pickSoonestLocked()
+}
+
+// pickStickyLocked keeps returning the current key until it enters cooldown, then
+// fails over to the next eligible key and stays there (overflow failover): one key
+// at a time, switching only on a rate limit, so an idle key is held in reserve.
+func (r *KeyRotator) pickStickyLocked(now time.Time) string {
+	for i := 0; i < len(r.keys); i++ {
+		j := (r.idx + i) % len(r.keys)
+		k := r.keys[j]
+		until, cooling := r.cooldown[k]
+		if !cooling || now.After(until) {
+			delete(r.cooldown, k)
+			r.idx = j // stick to this key until it too cools
+			r.last = k
+			return k
+		}
+	}
+	return r.pickSoonestLocked()
+}
+
+// pickSoonestLocked returns the key whose cooldown expires soonest, used when every
+// key is cooling: the caller still needs a key to attempt, and its own bounded
+// backoff prevents hammering.
+func (r *KeyRotator) pickSoonestLocked() string {
 	best := ""
 	var bestUntil time.Time
 	for _, k := range r.keys {
@@ -98,6 +136,19 @@ func (r *KeyRotator) Pick() string {
 	}
 	r.last = best
 	return best
+}
+
+// SetSticky switches the rotator between round-robin (false, default) and
+// overflow-failover (true). In sticky mode the rotator keeps returning one key
+// until that key enters cooldown, then fails over to the next and stays there,
+// instead of alternating every request. Intended to be set once at construction.
+func (r *KeyRotator) SetSticky(v bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sticky = v
 }
 
 // MarkLastRateLimited puts the key most recently returned by Pick into the
@@ -133,4 +184,22 @@ func (r *KeyRotator) Len() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.keys)
+}
+
+// Contains reports whether key is one of the pooled keys. Used so the client can
+// rotate an endpoint that already carries a pooled key (e.g. a provider profile
+// that resolved to the first key while XALGORIX_API_KEY is empty), without ever
+// touching a credential that is not in the operator's own pool.
+func (r *KeyRotator) Contains(key string) bool {
+	if r == nil || key == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, k := range r.keys {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
