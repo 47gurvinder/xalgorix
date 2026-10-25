@@ -440,6 +440,10 @@ type ScanState struct {
 	// exploratory tasks so the scan converges instead of churning (see
 	// reconcilePlan / measurableObligationsMet).
 	ConvergeReconcile bool
+	// EndpointHygiene mirrors cfg.EndpointHygiene: scrub scanner-side noise from
+	// endpoint accounting so a polluted coverage baseline can't block convergence
+	// (see endpoint_hygiene.go).
+	EndpointHygiene bool
 	// CoverageEpoch is the current coverage epoch (0 = not started / disabled).
 	CoverageEpoch int
 	// CoverageBaseline is the frozen endpoint snapshot the current epoch tests
@@ -1612,6 +1616,12 @@ func markEndpointClassCoverage(state *ScanState, endpoint, class string) {
 	state.VulnClassesTested[class] = true
 
 	if endpoint == "" {
+		return
+	}
+	// Never record scanner-side noise (payload vars, OAST callbacks, tool-config
+	// paths) as a tested endpoint — it poisons the coverage map. VulnClassesTested
+	// above is already set, so the class still counts as exercised.
+	if state.EndpointHygiene && !isValidTargetEndpoint(endpoint) {
 		return
 	}
 	if state.EndpointClassCoverage == nil {
@@ -3761,6 +3771,13 @@ func reconcilePlan(state *ScanState) {
 	if state == nil || state.Plan == nil {
 		return
 	}
+	// Scrub scanner-side noise from endpoint accounting before any coverage math
+	// runs, so a baseline frozen from polluted DiscoveredEndpoints self-heals and
+	// bogus obligations stop holding the scan open (no-op unless the
+	// XALGORIX_ENDPOINT_HYGIENE flag is on).
+	if state.EndpointHygiene {
+		sanitizeEndpointState(state)
+	}
 	// Open epoch 1 once there is surface to freeze, so every coverage
 	// evaluation below sees a stable denominator (no-op unless the
 	// XALGORIX_EPOCH_COVERAGE flag is on).
@@ -3861,7 +3878,11 @@ func extractEndpointsFromNotes(state *ScanState) []string {
 	if blob == "" {
 		return nil
 	}
-	return extractPaths(blob)
+	paths := extractPaths(blob)
+	if state.EndpointHygiene {
+		paths = filterValidEndpoints(paths)
+	}
+	return paths
 }
 
 // Endpoint inventories are the notes fallback for planning. Findings and

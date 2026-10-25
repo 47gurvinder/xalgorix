@@ -124,6 +124,14 @@ type Config struct {
 	// XALGORIX_CONVERGE_RECONCILE, default false (off).
 	ConvergeReconcile bool
 
+	// EndpointHygiene keeps the endpoint accounting (DiscoveredEndpoints,
+	// CoverageBaseline, EndpointClassCoverage) free of scanner-side noise —
+	// the engine's own tool-config paths, unexpanded payload/template variables,
+	// OAST callbacks — that otherwise freezes into the coverage baseline as bogus
+	// obligations and prevents a scan from ever converging. It only drops
+	// non-endpoints, never a real route. XALGORIX_ENDPOINT_HYGIENE, default false.
+	EndpointHygiene bool
+
 	// ToolArchiveMinBytes is the minimum raw-output size a tool result must
 	// have before it is archived/stubbed. Smaller results stay in-context
 	// verbatim (they are cheap to carry and often high-signal).
@@ -491,6 +499,7 @@ func load() *Config {
 		BoundedContext:          envOrBool("XALGORIX_BOUNDED_CONTEXT", false),
 		EpochCoverage:           envOrBool("XALGORIX_EPOCH_COVERAGE", false),
 		ConvergeReconcile:       envOrBool("XALGORIX_CONVERGE_RECONCILE", false),
+		EndpointHygiene:         envOrBool("XALGORIX_ENDPOINT_HYGIENE", false),
 		ToolArchiveMinBytes:     envOrInt("XALGORIX_TOOL_ARCHIVE_MIN_BYTES", 1500),
 		ToolArchiveActiveWindow: envOrInt("XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW", 8),
 		LLMContextWindow:        envOrInt("XALGORIX_LLM_CONTEXT_WINDOW", 128000),

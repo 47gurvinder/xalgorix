@@ -1806,6 +1806,7 @@ func (a *Agent) Run(targets []string, instruction string) {
 	// coverage predicates read a single ScanState flag (never the global cfg).
 	a.state.EpochCoverage = a.cfg != nil && a.cfg.EpochCoverage
 	a.state.ConvergeReconcile = a.cfg != nil && a.cfg.ConvergeReconcile
+	a.state.EndpointHygiene = a.cfg != nil && a.cfg.EndpointHygiene
 	// Single-agent mode is an intentional configuration, not a failure
 	// state; derived once so every delegation path reads one flag.
 	a.state.DelegationEnabled = a.delegationEnabled()
