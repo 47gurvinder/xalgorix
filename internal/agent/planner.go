@@ -838,10 +838,15 @@ func taskCoverageComplete(state *ScanState, task *Task) bool {
 	if task.Origin != "auto" && strings.TrimSpace(task.Endpoint) != "" {
 		return endpointTestedForClass(state, task.Endpoint, task.VulnClass)
 	}
-	if len(state.DiscoveredEndpoints) == 0 {
+	// Per-endpoint completion is measured against the coverage denominator: the
+	// frozen epoch baseline when epoch coverage is active, else the live
+	// discovered set (legacy behavior). Freezing the denominator lets class
+	// tasks converge without dropping coverage (see coverage_epoch.go).
+	denom := coverageDenominator(state)
+	if len(denom) == 0 {
 		return state.VulnClassesTested[task.VulnClass]
 	}
-	for _, endpoint := range state.DiscoveredEndpoints {
+	for _, endpoint := range denom {
 		// Non-applicable pairs are not obligations: a class completes when
 		// every APPLICABLE endpoint is covered, so /robots.txt can never
 		// hold an injection lane open and an unrelated signal can never
