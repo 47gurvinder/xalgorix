@@ -114,6 +114,16 @@ type Config struct {
 	// tested before finish. XALGORIX_EPOCH_COVERAGE, default false (off).
 	EpochCoverage bool
 
+	// ConvergeReconcile closes out class-less exploratory plan tasks once every
+	// MEASURABLE obligation (vuln-class coverage + the structured engine tasks)
+	// is terminal and MinIterations has passed. Such tasks carry no coverage
+	// requirement the endpoint×class matrix can satisfy, so the normal predicate
+	// (taskCoverageComplete) can never close them — left open they hold a scan in
+	// an unbounded churn at 100% systematic coverage. No measured coverage is
+	// dropped: the full matrix is already satisfied before anything closes.
+	// XALGORIX_CONVERGE_RECONCILE, default false (off).
+	ConvergeReconcile bool
+
 	// ToolArchiveMinBytes is the minimum raw-output size a tool result must
 	// have before it is archived/stubbed. Smaller results stay in-context
 	// verbatim (they are cheap to carry and often high-signal).
@@ -480,6 +490,7 @@ func load() *Config {
 		MaxStuckAdvances:        envOrInt("XALGORIX_MAX_STUCK_ADVANCES", 3),
 		BoundedContext:          envOrBool("XALGORIX_BOUNDED_CONTEXT", false),
 		EpochCoverage:           envOrBool("XALGORIX_EPOCH_COVERAGE", false),
+		ConvergeReconcile:       envOrBool("XALGORIX_CONVERGE_RECONCILE", false),
 		ToolArchiveMinBytes:     envOrInt("XALGORIX_TOOL_ARCHIVE_MIN_BYTES", 1500),
 		ToolArchiveActiveWindow: envOrInt("XALGORIX_TOOL_ARCHIVE_ACTIVE_WINDOW", 8),
 		LLMContextWindow:        envOrInt("XALGORIX_LLM_CONTEXT_WINDOW", 128000),
