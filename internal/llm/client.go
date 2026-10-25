@@ -187,6 +187,10 @@ func (c *Client) Clone() *Client {
 		promptCaching: c.promptCaching,
 		rateLimiter:   c.rateLimiter,
 		resolver:      c.resolver,
+		// Share the key-pool rotator (pointer) so a cloned client keeps spreading
+		// requests across the pool and shares round-robin + cooldown state with the
+		// parent, instead of silently dropping to a single key.
+		keyRotator: c.keyRotator,
 	}
 	clone.ctx.Store(ctxHolder{ctx: context.Background()})
 	if v := c.tempOverride.Load(); v != nil {
@@ -594,7 +598,16 @@ func (c *Client) applyKeyRotation(ep Endpoint) Endpoint {
 	if c.keyRotator == nil || c.cfg == nil || ep.Auth != AuthAPIKey {
 		return ep
 	}
-	if ep.APIKey != c.cfg.APIKey {
+	// Rotate when the endpoint carries the legacy configured key (ep.APIKey ==
+	// cfg.APIKey) OR already carries one of the pooled keys. The pool holds only
+	// the operator's own keys (XALGORIX_API_KEY + XALGORIX_API_KEYS), so a request
+	// already using a pooled key is ours to spread across the pool — this is the
+	// common case when the keys are supplied via XALGORIX_API_KEYS with an empty
+	// XALGORIX_API_KEY and a provider profile resolves every request to the first
+	// key (which otherwise never matched the empty cfg.APIKey, pinning all traffic
+	// to one key). A credential outside the pool (a different provider's
+	// profile/keystore key) is never in the pool and is left untouched.
+	if ep.APIKey != c.cfg.APIKey && !c.keyRotator.Contains(ep.APIKey) {
 		return ep
 	}
 	if k := c.keyRotator.Pick(); k != "" {

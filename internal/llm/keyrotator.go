@@ -134,3 +134,21 @@ func (r *KeyRotator) Len() int {
 	defer r.mu.Unlock()
 	return len(r.keys)
 }
+
+// Contains reports whether key is one of the pooled keys. Used so the client can
+// rotate an endpoint that already carries a pooled key (e.g. a provider profile
+// that resolved to the first key while XALGORIX_API_KEY is empty), without ever
+// touching a credential that is not in the operator's own pool.
+func (r *KeyRotator) Contains(key string) bool {
+	if r == nil || key == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, k := range r.keys {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
