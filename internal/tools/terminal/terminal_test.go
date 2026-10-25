@@ -382,3 +382,33 @@ func TestRunShellScopesHomeAndBlocksCdOutsideWorkspace(t *testing.T) {
 		t.Fatalf("workspace temp dir missing: %v", err)
 	}
 }
+
+func TestCommandEnvStripsOperatorSecrets(t *testing.T) {
+	// Non-namespaced integration secrets previously leaked to terminal tools —
+	// only the Python tool scrubbed them. They must be gone from both now.
+	t.Setenv("AGENTMAIL_API_KEY", "am-secret")
+	t.Setenv("CAIDO_API_TOKEN", "caido-secret")
+	t.Setenv("XALGORIX_PASSWORD", "admin-secret")
+	// Third-party recon tool keys must still reach executed tools.
+	t.Setenv("GITHUB_TOKEN", "ghp-keepme")
+
+	joined := strings.Join(commandEnv("/home/tester", "/home/tester/go", "/tmp/work", requestRateRuntime{}), "\n")
+	for _, leaked := range []string{"AGENTMAIL_API_KEY=", "CAIDO_API_TOKEN=", "XALGORIX_PASSWORD="} {
+		if strings.Contains(joined, leaked) {
+			t.Errorf("commandEnv leaked operator secret %q to the tool environment", leaked)
+		}
+	}
+	if !strings.Contains(joined, "GITHUB_TOKEN=ghp-keepme") {
+		t.Error("commandEnv dropped GITHUB_TOKEN; third-party recon keys must survive")
+	}
+}
+
+func TestIsBlockedCommand_CredentialFile(t *testing.T) {
+	if reason := isBlockedCommand("cat /root/.xalgorix.env"); reason == "" {
+		t.Error("isBlockedCommand allowed reading the scanner credential file")
+	}
+	// Fetching a target's own /.env is a legitimate web check and must not trip.
+	if reason := isBlockedCommand("curl -s https://target.example.com/.env"); reason != "" {
+		t.Errorf("isBlockedCommand blocked a benign target .env fetch: %s", reason)
+	}
+}

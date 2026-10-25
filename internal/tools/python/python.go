@@ -238,23 +238,12 @@ func pythonWorkspaceEnv(workDir string) []string {
 		"XALGORIX_WORKSPACE":      true,
 		"PYTHONDONTWRITEBYTECODE": true,
 	}
-	// Scrub every XALGORIX_* variable and known credential variables —
-	// same deny-list as terminal.go. The agent must never see proxy
-	// credentials, LLM API keys, dashboard auth, or integration tokens
-	// through `import os; os.environ` in a python_action call.
-	for _, kv := range []string{
-		"XALGORIX_API_KEY", "XALGORIX_API_KEYS", "XALGORIX_LLM",
-		"XALGORIX_LLM_PROVIDER", "XALGORIX_LLM_PROFILE", "XALGORIX_API_BASE",
-		"XALGORIX_PROXY_URL", "XALGORIX_PROXY_FILE", "XALGORIX_PROXY_ROTATION",
-		"XALGORIX_USERNAME", "XALGORIX_PASSWORD", "XALGORIX_PASSWORD_HASH",
-		"XALGORIX_TARGET_AUTH", "XALGORIX_TARGET_AUTH_B",
-		"XALGORIX_DISCORD_WEBHOOK", "XALGORIX_TELEGRAM_BOT_TOKEN",
-		"XALGORIX_TELEGRAM_CHAT_ID", "GEMINI_API_KEY", "AGENTMAIL_API_KEY",
-		"AGENTMAIL_POD", "CAIDO_API_TOKEN", "INBOUND_EMAIL_SECRET",
-		"XALGORIX_OOB_API_KEY", "XALGORIX_OOB_HOST",
-	} {
-		replace[kv] = true
-	}
+	// The agent must never see the operator's provider keys, admin-console
+	// login, proxy credentials, or integration tokens through
+	// `import os; os.environ` in a python_action call. The loop below drops the
+	// whole XALGORIX_* namespace plus the non-namespaced operator secrets via the
+	// shared tools.SecretEnvKey deny-list — the same one terminal.go uses, so the
+	// two tools' environments cannot drift apart.
 	env := make([]string, 0, len(os.Environ())+7)
 	for _, kv := range os.Environ() {
 		key, _, ok := strings.Cut(kv, "=")
@@ -264,9 +253,9 @@ func pythonWorkspaceEnv(workDir string) []string {
 		if replace[key] {
 			continue
 		}
-		// Catch-all: strip any XALGORIX_* variable we didn't explicitly
-		// allow-list above.
-		if strings.HasPrefix(key, "XALGORIX_") {
+		// Drop the whole XALGORIX_* namespace (tools never need it; the few safe
+		// ones are re-added below) and any non-namespaced operator secret.
+		if strings.HasPrefix(key, "XALGORIX_") || tools.SecretEnvKey(key) {
 			continue
 		}
 		env = append(env, kv)
