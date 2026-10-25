@@ -612,6 +612,30 @@ func (c *Client) noteKeyRateLimited() {
 	}
 }
 
+// noteKeyQuotaExhausted cools the pooled key used by the request that just
+// failed with quota_exhausted using the longer quota cooldown, so the rotator
+// stops routing to a key whose usage window is drained until it very likely
+// resets, instead of thrashing requests back onto it every 90s.
+func (c *Client) noteKeyQuotaExhausted() {
+	if c.keyRotator != nil {
+		c.keyRotator.MarkLastQuotaExhausted()
+	}
+}
+
+// noteKeyRateLimitedForError cools the pooled key used by a failed request,
+// choosing the long quota-exhausted cooldown when the error classifies as
+// quota_exhausted and the short transient cooldown otherwise.
+func (c *Client) noteKeyRateLimitedForError(errStr string) {
+	if c.keyRotator == nil {
+		return
+	}
+	if ClassifyErrorString(errStr).Class == ErrorClassQuotaExhausted {
+		c.keyRotator.MarkLastQuotaExhausted()
+		return
+	}
+	c.keyRotator.MarkLastRateLimited()
+}
+
 // unknownHeaderStyleOnce guards a single log line per process so a
 // catalog file edited out-of-band with a corrupt headerStyle
 // produces exactly one breadcrumb instead of spamming the log on
@@ -1315,6 +1339,16 @@ func (c *Client) chatWithRetry(messages []Message, tools []ToolDefinition, calls
 		// just like rate limits. Avoid replaying a full request inside both loops.
 		classified := ClassifyErrorString(errStr)
 		if classified.Class == ErrorClassOverloaded || classified.Class == ErrorClassQuotaExhausted {
+			// Cool the pooled key before handing off to the agent's bounded
+			// backoff, so the retry that follows picks a different key instead
+			// of round-robining back onto this one. Quota exhaustion gets the
+			// long cooldown (the usage window stays drained far longer than a
+			// transient overload).
+			if classified.Class == ErrorClassQuotaExhausted {
+				c.noteKeyQuotaExhausted()
+			} else {
+				c.noteKeyRateLimited()
+			}
 			return "", nil, fmt.Errorf("upstream unavailable: %w", err)
 		}
 
@@ -1461,8 +1495,9 @@ func (c *Client) ChatStream(messages []Message) <-chan StreamChunk {
 				ch <- StreamChunk{Err: fmt.Errorf("API returned %d (failed to read body: %w)", resp.StatusCode, readErr)}
 				return
 			}
-			if isRateLimitError(fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(respBody))) {
-				c.noteKeyRateLimited()
+			rlErr := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(respBody))
+			if isRateLimitError(rlErr) {
+				c.noteKeyRateLimitedForError(rlErr)
 			}
 			ch <- StreamChunk{Err: fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))}
 			return
@@ -1741,8 +1776,9 @@ func (c *Client) doChatWithUsage(messages []Message, tools []ToolDefinition, cal
 		return "", nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		if isRateLimitError(fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(respBody))) {
-			c.noteKeyRateLimited()
+		rlErr := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(respBody))
+		if isRateLimitError(rlErr) {
+			c.noteKeyRateLimitedForError(rlErr)
 		}
 		return "", nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))
 	}

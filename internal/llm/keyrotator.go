@@ -26,6 +26,14 @@ import (
 // has very likely reset.
 const keyPoolCooldown = 90 * time.Second
 
+// keyPoolQuotaCooldown is the longer cooldown applied when a key is rejected
+// with quota_exhausted (account balance / usage-window exhaustion). That state
+// lasts far longer than a transient per-minute rate limit, so the short
+// cooldown above would thrash requests straight back onto the dead key every
+// 90s. The longer cooldown keeps the key out of rotation and re-probes it only
+// occasionally, so it rejoins once the provider's usage window resets.
+const keyPoolQuotaCooldown = 15 * time.Minute
+
 // KeyRotator hands out keys from a fixed pool in round-robin order,
 // skipping keys that are cooling down after a rate limit.
 type KeyRotator struct {
@@ -92,15 +100,29 @@ func (r *KeyRotator) Pick() string {
 	return best
 }
 
-// MarkLastRateLimited puts the key most recently returned by Pick into
-// cooldown so subsequent picks concentrate on the remaining keys.
+// MarkLastRateLimited puts the key most recently returned by Pick into the
+// short transient-rate-limit cooldown so subsequent picks concentrate on the
+// remaining keys.
 func (r *KeyRotator) MarkLastRateLimited() {
+	r.markLast(keyPoolCooldown)
+}
+
+// MarkLastQuotaExhausted puts the key most recently returned by Pick into the
+// longer quota-exhausted cooldown (see keyPoolQuotaCooldown), so the rotator
+// stops routing requests to a key whose usage window is drained until it very
+// likely resets, instead of thrashing back onto it every 90s.
+func (r *KeyRotator) MarkLastQuotaExhausted() {
+	r.markLast(keyPoolQuotaCooldown)
+}
+
+// markLast cools the key most recently returned by Pick for the given duration.
+func (r *KeyRotator) markLast(d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.last == "" {
 		return
 	}
-	r.cooldown[r.last] = time.Now().Add(keyPoolCooldown)
+	r.cooldown[r.last] = time.Now().Add(d)
 }
 
 // Len reports how many distinct keys the pool holds.
