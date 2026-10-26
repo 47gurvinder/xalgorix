@@ -43,7 +43,11 @@ package agent
 // the flag off every function here is unreachable (callers are flag-gated) and
 // behavior is the legacy path byte-for-byte.
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/xalgord/xalgorix/v4/internal/scanctx"
+)
 
 const (
 	// convergeFinishDefaultIdle is the no-new-finding tail (iterations) required
@@ -220,6 +224,39 @@ func closeSoftTasksForFinish(state *ScanState) int {
 		closed++
 	}
 	return closed
+}
+
+// reconcileLedgerForFinish settles dangling "testing" hypotheses at a principled
+// finish. The model moves far more hypotheses to "testing" than it ever closes
+// (it claims from a huge backlog and moves on), so after the finding-idle tail
+// those are abandoned, not active, work — yet left open they keep the completion
+// assessment "incomplete" even though the scan is genuinely done. Marking them
+// exhausted (attempt spent without proof) records them as settled residual, so
+// the terminal status reads "completed". Only "testing" is touched: queued
+// hypotheses were never claimed (and don't gate completion), proven ones are real
+// findings, and rejected/blocked/exhausted are already terminal. Flag-gated and a
+// no-op without a ledger. Returns the number reconciled.
+func reconcileLedgerForFinish(state *ScanState) int {
+	if state == nil || !state.ConvergeFinish {
+		return 0
+	}
+	l := ledgerForState(state)
+	if l == nil {
+		return 0
+	}
+	owner := ""
+	if state.DelegatedAgent {
+		owner = state.DelegatedAgentID
+	}
+	n := 0
+	for _, h := range l.All() {
+		if h.Status == scanctx.HypothesisTesting && hypothesisBelongsToOwner(h, owner) {
+			if l.SetStatus(h.ID, scanctx.HypothesisExhausted, "claimed but not completed within the scan; closed as residual at principled finish") {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // hasCoverageSufficientTask reports whether the principled finish closed any
