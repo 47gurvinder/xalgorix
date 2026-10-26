@@ -19,15 +19,15 @@ package agent
 //
 // The fix: a principled finish
 // ----------------------------
-// Once a scan is SATURATED — the structured methodology (recon/dirbust/auth) is
-// done, no targeted specific-endpoint hypothesis is still open, and the required
-// injection classes have been exercised across the target past a breadth
-// threshold — the remaining per-endpoint/whole-target class tasks close
-// (DispositionCoverageSufficient) and class-less exploratory tasks close
-// (DispositionCoverageComplete), but only after a no-new-finding tail
-// (convergeFinishIdleLimit) confirms diminishing returns. The residual untested
-// (route,class) pairs and any class not exercised target-wide are recorded in the
-// report (completion.go), so the tradeoff is transparent rather than silent.
+// Once a scan is SATURATED — foundational discovery (recon/dirbust) is done and the
+// required injection classes have been exercised across the target past a breadth
+// threshold — the remaining per-endpoint/whole-target class tasks, the model's own
+// pending specific-endpoint hypotheses, and class-less exploratory tasks all close
+// (DispositionCoverageSufficient / DispositionCoverageComplete), but only after a
+// no-new-finding tail (convergeFinishIdleLimit) confirms diminishing returns. The
+// residual untested (route,class) and (endpoint,class) pairs, plus any class not
+// exercised target-wide, are recorded in the report (completion.go), so the tradeoff
+// is transparent rather than silent.
 //
 // Breadth, not per-route percentage, is the coverage gate on purpose: per-route
 // coverage measured against the dirbust-polluted baseline is meaningless (reads
@@ -36,11 +36,12 @@ package agent
 // "the methodology actually ran" signal. Companion Lever A (surface.go) stops
 // content-discovery artifacts from owing injection classes at all.
 //
-// Nothing concrete is abandoned: an open structured task or an open
-// specific-endpoint LLM hypothesis makes the scan not-saturated, so the finish
-// never fires while targeted or methodology work remains. With the flag off every
-// function here is unreachable (callers are flag-gated) and behavior is the legacy
-// path byte-for-byte.
+// Foundational work is never abandoned: an open recon/dirbust task keeps the scan
+// not-saturated, so the finish never fires before the surface is mapped. The model's
+// specific-endpoint hypotheses DO close as residual — the finding-idle tail is what
+// protects a still-productive scan, not an unbounded planned-hypothesis backlog. With
+// the flag off every function here is unreachable (callers are flag-gated) and
+// behavior is the legacy path byte-for-byte.
 
 import "strings"
 
@@ -59,30 +60,36 @@ const (
 	convergeFinishClassBreadth = 0.60
 )
 
-// taskBlocksPrincipledFinish reports whether an open task is concrete work that
-// must be settled before a principled finish: the foundational discovery
-// (recon/dirbust — coverage is meaningless until the surface is mapped) or a
-// targeted specific-endpoint LLM hypothesis. Everything else open (generic
-// per-endpoint class tasks, whole-target class tasks, a stuck auth-session, and
-// class-less exploratory tasks) is "soft" and may close at the finish.
+// taskBlocksPrincipledFinish reports whether an open task is concrete FOUNDATIONAL
+// work that must be settled before a principled finish: recon and dirbust, because
+// coverage is meaningless until the surface is actually mapped. Everything else open
+// — generic per-endpoint class tasks, whole-target class tasks, the model's own
+// specific-endpoint hypotheses, a stuck auth-session, and class-less exploratory
+// tasks — is "soft" and closes at the finish, recorded as residual.
 //
-// auth-session is deliberately NOT a hard blocker: on a target with a login but
-// no ingested credentials it can never complete, so blocking on it holds the whole
-// scan open forever. At a principled finish it closes as an honest blocked/residual
-// disposition (closeSoftTasksForFinish) instead.
-func taskBlocksPrincipledFinish(t *Task) bool {
+// Specific-endpoint LLM hypotheses are intentionally NOT blockers. The model plans
+// far more of them than it ever executes — dozens per scan, pulled from a backlog it
+// never drains — so treating them as must-complete held the scan open forever (the
+// observed non-convergence: recon/dirbust/classes all done, yet ~20 planned
+// endpoint-specific hypotheses perpetually pending). They are exactly the untested
+// (endpoint, class) pairs the principled finish is approved to close as logged
+// residual, and the finding-idle tail (no new finding for convergeFinishDefaultIdle
+// iterations) guarantees a scan that is still turning these into findings is never
+// cut — only one in genuine diminishing returns is.
+func taskBlocksPrincipledFinish(state *ScanState, t *Task) bool {
 	if t == nil {
 		return false
 	}
 	switch t.ID {
-	case "recon", "dirbust":
-		return true
-	}
-	// A specific-endpoint hypothesis the model planned (not an engine "auto"
-	// per-endpoint class task) names a concrete endpoint to test — settle it,
-	// never skip it.
-	if t.VulnClass != "" && !t.WholeTarget && t.Origin != "auto" && strings.TrimSpace(t.Endpoint) != "" {
-		return true
+	case "recon":
+		// Block only while recon is genuinely incomplete. The recon TASK status
+		// can linger "pending" even after recon is done, because its completion
+		// predicate (ComprehensiveReconComplete) is stricter than state.ReconDone;
+		// blocking on that stale status would hold a fully-reconned scan open
+		// forever. ReconDone is the engine's authoritative "surface is mapped" flag.
+		return state == nil || !state.ReconDone
+	case "dirbust":
+		return state == nil || (!state.DirBustingDone && !state.VulnClassesTested["dirbusting"])
 	}
 	return false
 }
@@ -134,7 +141,7 @@ func saturatedForFinish(state *ScanState) bool {
 		if t.Status != TaskPending && t.Status != TaskActive {
 			continue
 		}
-		if taskBlocksPrincipledFinish(t) {
+		if taskBlocksPrincipledFinish(state, t) {
 			return false
 		}
 		sawSoft = true
@@ -160,7 +167,18 @@ func closeSoftTasksForFinish(state *ScanState) int {
 		if t.Status != TaskPending && t.Status != TaskActive {
 			continue
 		}
-		if taskBlocksPrincipledFinish(t) {
+		if taskBlocksPrincipledFinish(state, t) {
+			continue
+		}
+		if t.ID == "recon" || t.ID == "dirbust" {
+			// Reached here only because the work is actually done (ReconDone /
+			// DirBustingDone) but the task status lagged. Mark it COMPLETED — it is,
+			// and that keeps the worked-phases telemetry honest.
+			t.Status = TaskCompleted
+			if t.Notes == "" {
+				t.Notes = "engine: " + t.ID + " complete (authoritative state flag set); task status reconciled at principled finish"
+			}
+			closed++
 			continue
 		}
 		t.Status = TaskSkipped
@@ -179,6 +197,14 @@ func closeSoftTasksForFinish(state *ScanState) int {
 				if t.Notes == "" {
 					t.Notes = "engine: authenticated testing not completed (no credentials ingested / auth flow not mapped); recorded as blocked residual at principled finish"
 				}
+			}
+		case t.Origin == "llm" && t.VulnClass != "" && strings.TrimSpace(t.Endpoint) != "":
+			// A model-planned endpoint-specific hypothesis the scan never executed
+			// (the class was still exercised target-wide; this exact endpoint was not
+			// individually retested). Recorded as a residual (endpoint, class) pair.
+			t.Disposition = DispositionCoverageSufficient
+			if t.Notes == "" {
+				t.Notes = "engine: model-planned endpoint-specific test (" + t.VulnClass + ") not individually executed; class exercised target-wide, this endpoint recorded as residual at principled finish"
 			}
 		case t.VulnClass != "":
 			t.Disposition = DispositionCoverageSufficient

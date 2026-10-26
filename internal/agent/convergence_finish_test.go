@@ -4,21 +4,23 @@ import "testing"
 
 func TestTaskBlocksPrincipledFinish(t *testing.T) {
 	cases := []struct {
-		name string
-		task *Task
-		want bool
+		name  string
+		state *ScanState
+		task  *Task
+		want  bool
 	}{
-		{"recon blocks", &Task{ID: "recon"}, true},
-		{"dirbust blocks", &Task{ID: "dirbust"}, true},
-		{"auth-session does NOT block (closes as residual)", &Task{ID: "auth-session", VulnClass: "auth"}, false},
-		{"specific-endpoint llm hypothesis blocks", &Task{ID: "x", VulnClass: "sqli", Origin: "llm", Endpoint: "/login"}, true},
-		{"generic auto per-endpoint class task is soft", &Task{ID: "x", VulnClass: "sqli", Origin: "auto"}, false},
-		{"llm per-endpoint class task with no endpoint is soft", &Task{ID: "x", VulnClass: "sqli", Origin: "llm", Endpoint: ""}, false},
-		{"whole-target class task is soft", &Task{ID: "x", VulnClass: "redos", WholeTarget: true, Origin: "auto"}, false},
-		{"class-less exploratory is soft", &Task{ID: "x", VulnClass: ""}, false},
+		{"recon blocks when recon not done", &ScanState{ReconDone: false}, &Task{ID: "recon"}, true},
+		{"recon does NOT block once ReconDone (stale task status)", &ScanState{ReconDone: true}, &Task{ID: "recon"}, false},
+		{"dirbust blocks when not done", &ScanState{}, &Task{ID: "dirbust"}, true},
+		{"dirbust does NOT block once DirBustingDone", &ScanState{DirBustingDone: true}, &Task{ID: "dirbust"}, false},
+		{"auth-session does NOT block (closes as residual)", &ScanState{}, &Task{ID: "auth-session", VulnClass: "auth"}, false},
+		{"specific-endpoint llm hypothesis is soft (closes as residual)", &ScanState{}, &Task{ID: "x", VulnClass: "sqli", Origin: "llm", Endpoint: "/login"}, false},
+		{"generic auto per-endpoint class task is soft", &ScanState{}, &Task{ID: "x", VulnClass: "sqli", Origin: "auto"}, false},
+		{"whole-target class task is soft", &ScanState{}, &Task{ID: "x", VulnClass: "redos", WholeTarget: true, Origin: "auto"}, false},
+		{"class-less exploratory is soft", &ScanState{}, &Task{ID: "x", VulnClass: ""}, false},
 	}
 	for _, tc := range cases {
-		if got := taskBlocksPrincipledFinish(tc.task); got != tc.want {
+		if got := taskBlocksPrincipledFinish(tc.state, tc.task); got != tc.want {
 			t.Errorf("%s: taskBlocksPrincipledFinish = %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -66,11 +68,13 @@ func TestSaturatedForFinish(t *testing.T) {
 	if saturatedForFinish(st) {
 		t.Error("pending recon must block saturation")
 	}
-	// A pending specific-endpoint hypothesis blocks.
+	// A pending specific-endpoint hypothesis is soft: it must NOT block saturation
+	// (it closes as logged residual at the finish — the model over-plans these and
+	// never drains them, so blocking on them prevents convergence).
 	st2 := breadthState(11, true, 500)
 	st2.Plan.Tasks = append(st2.Plan.Tasks, &Task{ID: "h", VulnClass: "idor", Origin: "llm", Endpoint: "/x", Status: TaskPending})
-	if saturatedForFinish(st2) {
-		t.Error("pending specific-endpoint hypothesis must block saturation")
+	if !saturatedForFinish(st2) {
+		t.Error("pending specific-endpoint hypothesis must NOT block saturation (soft, closes as residual)")
 	}
 	// No soft task at all (only completed): nothing to close → not saturated.
 	st3 := breadthState(11, true, 500)
@@ -83,8 +87,8 @@ func TestSaturatedForFinish(t *testing.T) {
 func TestCloseSoftTasksForFinish(t *testing.T) {
 	st := &ScanState{
 		Plan: &Plan{Tasks: []*Task{
-			{ID: "recon", Status: TaskPending},                                                          // blocker: untouched
-			{ID: "h", VulnClass: "sqli", Origin: "llm", Endpoint: "/login", Status: TaskPending},        // blocker: untouched
+			{ID: "recon", Status: TaskPending},                                                          // foundational blocker: untouched
+			{ID: "h", VulnClass: "sqli", Origin: "llm", Endpoint: "/login", Status: TaskPending},        // specific-endpoint hypothesis → closes as residual
 			{ID: "t-sqli", VulnClass: "sqli", Origin: "auto", Status: TaskPending},                      // soft class → coverage_sufficient
 			{ID: "t-redos", VulnClass: "redos", WholeTarget: true, Origin: "auto", Status: TaskPending}, // soft class
 			{ID: "auth-session", VulnClass: "auth", Status: TaskActive},                                 // soft auth → blocked_missing_auth
@@ -93,18 +97,18 @@ func TestCloseSoftTasksForFinish(t *testing.T) {
 		}},
 	}
 	closed := closeSoftTasksForFinish(st)
-	if closed != 4 {
-		t.Fatalf("closed = %d, want 4", closed)
+	if closed != 5 {
+		t.Fatalf("closed = %d, want 5", closed)
 	}
 	by := map[string]*Task{}
 	for _, tk := range st.Plan.Tasks {
 		by[tk.ID] = tk
 	}
 	if by["recon"].Status != TaskPending {
-		t.Error("recon (blocker) must be left pending")
+		t.Error("recon (foundational blocker) must be left pending")
 	}
-	if by["h"].Status != TaskPending {
-		t.Error("specific-endpoint hypothesis (blocker) must be left pending")
+	if by["h"].Status != TaskSkipped || by["h"].Disposition != DispositionCoverageSufficient {
+		t.Errorf("specific-endpoint hypothesis = %v/%q, want skipped/coverage_sufficient (residual)", by["h"].Status, by["h"].Disposition)
 	}
 	if by["t-sqli"].Status != TaskSkipped || by["t-sqli"].Disposition != DispositionCoverageSufficient {
 		t.Errorf("t-sqli = %v/%q, want skipped/coverage_sufficient", by["t-sqli"].Status, by["t-sqli"].Disposition)
