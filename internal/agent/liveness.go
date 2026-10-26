@@ -425,6 +425,10 @@ func (a *Agent) autoFinalizeIfPlanComplete() bool {
 	if saturated {
 		closeSoftTasksForFinish(a.state)
 	}
+	// Settle dangling "testing" hypotheses as residual so the terminal status reads
+	// a clean "completed" instead of "incomplete" over an undrained claim backlog
+	// (flag-gated; no-op when ConvergeFinish is off).
+	reconcileLedgerForFinish(a.state)
 	a.emitPlanCompleteFinish(cur, limit)
 	return true
 }
